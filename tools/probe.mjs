@@ -39,8 +39,11 @@ for (const [name, url, extract] of probes) {
       newsLinks: (raw.match(/href=["'][^"']*\/news\/[\w-]+["']/g) || []).length,
       dateMetadata: /article:published_time|datePublished/.test(raw),
       firstAnchor: raw.match(/<a\b[^>]*href=["'][^"']*\/news\/[\w-]+[^>]*>/i)?.[0]?.slice(0, 230),
+      articleAnchorSamples: name === 'NBA.com news HTML' ? (raw.match(/<a\b[^>]*href=["']\/?news\/[\w-]+[^>]*>/gi) || []).filter(t => /title=|aria-label=/.test(t)).slice(0, 3).map(t => t.slice(0, 360)) : undefined,
       publishedMeta: raw.match(/<meta\b[^>]*(?:article:published_time|datePublished)[^>]*>/i)?.[0]?.slice(0, 220),
       publishedJson: raw.match(/"datePublished"\s*:\s*"([^"]+)"/)?.[1],
+      dateContext: name.includes('article') ? raw.match(/.{0,90}"datePublished"\s*:\s*"[^"]+".{0,90}/)?.[0] : undefined,
+      articleBodyMarker: name.includes('article') ? /"articleBody"/.test(raw) : undefined,
       h1: raw.match(/<h1\b[^>]*>([^<]{1,120})/i)?.[1],
       indexSnippet: name.includes('injury-report') ? raw.match(/(?:injury.report|admin.ajax|\.pdf)[^<>]{0,120}/i)?.[0]?.slice(0, 180) : undefined };
     log({ name, status: response.status, cors: allow, bytes: raw.length, shape });
