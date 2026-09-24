@@ -2,6 +2,7 @@
 import { urls } from '../src/sources.mjs';
 import { Engine, easternDate } from '../src/engine.mjs';
 import { nbaNewsLinks, nbaArticle } from '../src/nba-news.mjs';
+import { espnAthleteId, parseEspnInjuries, parseEspnNews, parseAthleteNews } from '../src/engine.mjs';
 
 const origin = 'https://buffedlizard55-lab.github.io';
 const story = 'https://www.nba.com/news/kyrie-irving-wont-return-2025-26-season';
@@ -16,8 +17,25 @@ const probes = [
       didNotPlay: data.boxscore.players[0].statistics[0].athletes[0].didNotPlay,
       stats: data.boxscore.players[0].statistics[0].athletes[0].stats?.slice(0, 4) },
     firstPlayParticipant: (() => { const p = data.plays?.find(p => p.participants?.length)?.participants?.[0]; return p && { keys: Object.keys(p), athleteId: p.athlete?.id }; })() })],
-  ['ESPN injuries', urls.injuries, data => ({ teams: data.injuries?.length, firstRowKeys: Object.keys(data.injuries?.[0]?.injuries?.[0] || {}), firstSource: data.injuries?.[0]?.injuries?.[0]?.source })],
-  ['ESPN news', urls.news, data => ({ articles: data.articles?.length, firstArticleKeys: Object.keys(data.articles?.[0] || {}) })],
+  ['ESPN injuries', urls.injuries, data => {
+    const rows = (data.injuries || []).flatMap(team => team?.injuries || []);
+    // The regression that broke injury detection: rows carry NO athlete.id, so the
+    // id has to be recovered from links/uid/headshot/$ref. Report the live counts
+    // so any future schema change is visible instead of silently returning zero.
+    const withId = rows.filter(row => row?.athlete?.id != null).length;
+    const extracted = rows.filter(row => espnAthleteId(row?.athlete, row)).length;
+    return { teams: data.injuries?.length, rows: rows.length, rowsWithAthleteId: withId,
+      rowsWithRecoverableAthleteId: extracted,
+      athleteKeys: Object.keys(rows[0]?.athlete || {}),
+      parsedCandidates: parseEspnInjuries(data).length,
+      publishers: [...new Set(rows.map(row => row?.athlete?.notes?.items?.[0]?.source).filter(Boolean))].slice(0, 6),
+      firstSource: rows[0]?.source };
+  }],
+  ['ESPN news', urls.news, data => ({ articles: data.articles?.length, firstArticleKeys: Object.keys(data.articles?.[0] || {}),
+    parsedCandidates: parseEspnNews(data).length,
+    athleteTagged: (data.articles || []).filter(a => (a.categories || []).some(c => c.type === 'athlete' && c.athleteId)).length })],
+  ['ESPN player news', urls.athleteNews(4432166), data => ({ keys: Object.keys(data || {}),
+    articles: data.articles?.length, parsed: (() => { try { return parseAthleteNews(data, 4432166, { name: 'Cade Cunningham' }).length; } catch (error) { return String(error.message); } })() })],
   ['NBA official scoreboard', urls.nbaScoreboard, data => ({ games: data.scoreboard?.games?.length })],
   ['NBA archived PBP', archivedPbp, data => ({ actions: data.game?.actions?.length,
     reviewExamples: data.game?.actions?.filter(a => /review|challeng/i.test(a.description || '')).slice(0, 3).map(a => ({ actionType: a.actionType, period: a.period, clock: a.clock, description: a.description })) })],
@@ -82,6 +100,17 @@ for (const [name, url, extract] of probes) {
 }
 // Actions has a per-step notice limit. A single compact annotation keeps ALL
 // observations accessible through the PR check API when the log archive is blocked.
+// Loud signal: a non-empty live injury feed whose athlete ids we cannot recover
+// means every structured injury would be dropped, exactly as in the original bug.
+const injuryProbe = results.find(r => r.name === 'ESPN injuries');
+if (injuryProbe?.shape?.rows > 0 && injuryProbe.shape.rowsWithRecoverableAthleteId === 0) {
+  console.log('::error title=ESPN injuries athlete id extraction failed::' +
+    `${injuryProbe.shape.rows} injury rows, 0 recoverable athlete ids. espnAthleteId needs updating for the current schema.`);
+  process.exitCode = 1;
+} else if (injuryProbe?.shape) {
+  console.log(`::notice title=ESPN injuries id extraction::rows=${injuryProbe.shape.rows} withAthleteId=${injuryProbe.shape.rowsWithAthleteId} recoverable=${injuryProbe.shape.rowsWithRecoverableAthleteId} parsed=${injuryProbe.shape.parsedCandidates}`);
+}
+
 if (process.env.GITHUB_ACTIONS === 'true') {
   const summary = JSON.stringify(results.map(({ name, status, cors, shape, error }) => ({ name, status, cors, shape, error })));
   console.log(`::notice title=Public source probe results::${summary.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);

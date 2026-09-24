@@ -25,13 +25,32 @@ export const summary = () => ({ header: { id: GAME_ID },
     { id: `${GAME_ID}21`, wallclock: '2026-10-03T23:05:00Z', type: { text: 'Timeout' }, team: { id: '1' }, participants: [{ athlete: { id: '7654321' } }], text: 'ATL timeout', period: { number: 1 }, clock: { displayValue: '10:30' }, awayScore: 2, homeScore: 0 }
   ]
 });
-export const injury = ({ id = '1234567', team = '1', status = 'Questionable', date = '2026-10-03T23:10:00Z', text = 'Test Player is questionable to return due to a left ankle sprain.' } = {}) => ({
-  injuries: [{ id: team, injuries: [{ status, date, shortComment: text, athlete: { id, displayName: id === '1234567' ? 'Test Player' : 'Bench Player', team: { id: team }, links: [] } }] }]
-});
+/**
+ * Mirrors the REAL ESPN /injuries schema captured 2026-09-24 (see
+ * tests/real/espn-injuries-captured.json). The live feed carries NO `athlete.id`;
+ * the id only appears in the player links, the sportscenter uid and the headshot
+ * filename. A fixture with `athlete.id` would test a schema production never sends.
+ */
+export const injury = ({ id = '1234567', team = '1', status = 'Questionable', date = '2026-10-03T23:10:00Z', text = 'Test Player is questionable to return due to a left ankle sprain.', publisher = '' } = {}) => {
+  const name = id === '1234567' ? 'Test Player' : 'Bench Player';
+  return { injuries: [{ id: team, injuries: [{ id: '-57577', status, date, shortComment: text,
+    athlete: { firstName: name.split(' ')[0], lastName: name.split(' ').slice(1).join(' '),
+      displayName: name, shortName: name.charAt(0),
+      links: [
+        { rel: ['news', 'desktop', 'athlete'], href: `https://www.espn.com/nba/player/news/_/id/${id}/test-player` },
+        { rel: ['stats', 'sportscenter', 'app', 'athlete'], href: `sportscenter://x-callback-url/showClubhouse?uid=s:40~l:46~a:${id}&section=stats` }
+      ],
+      headshot: { href: `https://a.espncdn.com/i/headshots/nba/players/full/${id}.png`, alt: name },
+      position: { id: '7', name: 'Forward', displayName: 'Forward', abbreviation: 'F' },
+      team: { id: team, uid: `s:40~l:46~t:${team}`, abbreviation: team === '1' ? 'ATL' : 'BOS', displayName: team === '1' ? 'Atlanta Hawks' : 'Boston Celtics' },
+      ...(publisher ? { notes: { items: [{ id: '-57577', type: 'news', date, headline: text, text, source: publisher,
+        injury: { $ref: `http://sports.core.api.espn.pvt/v2/sports/basketball/leagues/nba/seasons/2026/athletes/${id}/injuries/-57577?lang=en&region=us` } }] } } : {})
+    } }] }] };
+};
 export const news = ({ headline = 'Test Player will not return after ankle injury', date = '2026-10-03T23:15:00Z', athlete = '1234567', description = 'Test Player will not return to the game after an ankle sprain.' } = {}) => ({
   articles: [{ id: 11110000, published: date, headline, description, byline: 'Example reporter',
     links: { web: { href: 'https://www.espn.com/nba/story/_/id/11110000/example' } },
-    categories: [{ type: 'athlete', athleteId: athlete, description: athlete === '1234567' ? 'Test Player' : 'Bench Player' }] }]
+    categories: [{ type: 'athlete', athleteId: Number(athlete), description: athlete === '1234567' ? 'Test Player' : 'Bench Player' }] }]
 });
 export const nbaScoreboard = () => ({ scoreboard: { games: [
   { gameId: OFFICIAL_ID, gameTimeUTC: START, awayTeam: { teamTricode: 'ATL' }, homeTeam: { teamTricode: 'BOS' } }

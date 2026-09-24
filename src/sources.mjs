@@ -5,6 +5,8 @@ export const urls = {
   summary: id => `${ESPN}/summary?event=${id}`,
   injuries: `${ESPN}/injuries`,
   news: `${ESPN}/news?limit=50`,
+  // Verified 2026-09-24: returns the same {header, articles} contract as the league feed.
+  athleteNews: id => `${ESPN}/athletes/${id}/news`,
   nbaScoreboard: `${NBA}/scoreboard/todaysScoreboard_00.json`,
   nbaPbp: id => `${NBA}/playbyplay/playbyplay_${id}.json`,
   nbaNews: 'https://www.nba.com/news'

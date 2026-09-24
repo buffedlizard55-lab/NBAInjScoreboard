@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, easternDate, dateOffset, validDate, parseEspnInjuries, parseEspnNews, classifyReport, reviewSignal, parseScoreboard } from '../src/engine.mjs';
+import { Engine, easternDate, dateOffset, validDate, parseEspnInjuries, parseEspnNews, parseAthleteNews, classifyReport, reviewSignal, parseScoreboard } from '../src/engine.mjs';
 import { GAME_ID, OFFICIAL_ID, START, liveScoreboard, summary, injury, news, nbaScoreboard, nbaPbp } from './fixtures.mjs';
 
 const NOW = Date.parse('2026-10-03T23:30:00Z');
@@ -50,9 +50,25 @@ test('do not turn old pregame, future game, personal reason, unrelated team, DNP
   engine.injuriesFeed(injury({ text: 'Test Player injured ankle but will not play Friday.' }));
   engine.injuriesFeed(injury({ text: 'Test Player (ankle) may not play next Monday.' }));
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 0);
+  // A report filed well after the last recorded play is a post-game story, not an
+  // in-game injury (the fixture's last play is 23:05Z, so 23:26Z is 21 min later).
   engine.scoreboard('2026-10-03', liveScoreboard('post'));
-  engine.injuriesFeed(injury());
+  engine.injuriesFeed(injury({ date: '2026-10-03T23:26:00Z' }));
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 0);
+});
+test('an injury reported just after the final buzzer is still attributed to that game', () => {
+  const engine = ready();
+  engine.scoreboard('2026-10-03', liveScoreboard('post'));
+  engine.injuriesFeed(injury({ date: '2026-10-03T23:08:00Z', status: 'Out',
+    text: 'Test Player was ruled out after leaving with a left ankle sprain late in the fourth quarter.' }));
+  const state = engine.snapshot('2026-10-03');
+  assert.equal(state.injuries.length, 1);
+  assert.equal(state.injuries[0].status, 'out');
+  assert.match(state.injuries[0].text, /ruled out/);
+  // But the same wording published hours later is not an in-game event.
+  engine.injuriesFeed(injury({ date: '2026-10-03T23:20:00Z', status: 'Out',
+    text: 'Test Player was ruled out after leaving with a left ankle sprain late in the fourth quarter.' }));
+  assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
 });
 test('reports pending box score participation can be picked up on the next poll', () => {
   const engine = new Engine({ now: () => NOW });
@@ -202,4 +218,52 @@ test('ESPN raw injury shape and timestamps fail closed', () => {
   const engine = ready();
   engine.injuriesFeed(injury({ date: '2026-10-04T00:45:00Z' }));
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 0);
+});
+
+test('per-athlete news catches injuries the league feed drops, and dedups with it', () => {
+  const engine = ready();
+  const story = { articles: [{ id: 11110000, published: '2026-10-03T23:18:00Z', byline: 'Example reporter',
+    headline: 'Test Player exits with left ankle sprain', description: 'Test Player left the game in the third quarter with a left ankle sprain.',
+    links: { web: { href: 'https://www.espn.com/nba/story/_/id/11110000/example' } },
+    categories: [] }] }; // no athlete tag: the league-wide parser cannot use it
+  assert.deepEqual(parseEspnNews(story), [], 'an untagged story cannot be assigned by the league parser');
+  const found = parseAthleteNews(story, '1234567', { name: 'Test Player', others: ['Bench Player', 'Other Player'] });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].athleteId, '1234567');
+  assert.equal(found[0].status, 'reported');
+  for (const item of found) engine.accept(item);
+  assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
+  // A headline naming a DIFFERENT live participant is ambiguous and must be dropped.
+  const ambiguous = { articles: [{ ...story.articles[0], headline: 'Bench Player and Test Player both leave with injuries' }] };
+  assert.deepEqual(parseAthleteNews(ambiguous, '1234567', { name: 'Test Player', others: ['Bench Player'] }), []);
+  // Surname-only headlines still resolve, and non-injury stories never do.
+  assert.equal(parseAthleteNews({ articles: [{ ...story.articles[0], headline: 'Player exits with left ankle sprain' }] },
+    '1234567', { name: 'Test Player' }).length, 1);
+  assert.deepEqual(parseAthleteNews({ articles: [{ ...story.articles[0], headline: 'Test Player scores 30 points in win' }] },
+    '1234567', { name: 'Test Player' }), []);
+  // A trailing roman numeral is not a usable surname match.
+  assert.deepEqual(parseAthleteNews({ articles: [{ ...story.articles[0], headline: 'II exits with left ankle sprain' }] },
+    '4683771', { name: 'Ronald Holland II' }), []);
+  assert.equal(parseAthleteNews({ articles: [{ ...story.articles[0], headline: 'Holland exits with left ankle sprain' }] },
+    '4683771', { name: 'Ronald Holland II' }).length, 1);
+  assert.throws(() => parseAthleteNews({}, '1234567', { name: 'Test Player' }), /Invalid ESPN athlete news response/);
+  assert.throws(() => parseAthleteNews(story, '', { name: 'Test Player' }), /Invalid ESPN athlete news request/);
+});
+
+test('the same story found by both news routes alerts exactly once', () => {
+  const engine = ready();
+  const headline = 'Test Player exits with left ankle sprain';
+  const article = { id: 11110000, published: '2026-10-03T23:18:00Z', byline: 'Example reporter', headline,
+    description: 'Test Player left the game in the third quarter with a left ankle sprain.',
+    links: { web: { href: 'https://www.espn.com/nba/story/_/id/11110000/example' } },
+    categories: [{ type: 'athlete', athleteId: 1234567, description: 'Test Player' }] };
+  const viaLeague = parseEspnNews({ articles: [article] });
+  const viaPlayer = parseAthleteNews({ articles: [article] }, '1234567', { name: 'Test Player' });
+  assert.equal(viaLeague.length, 1);
+  assert.equal(viaPlayer.length, 1);
+  assert.equal(viaLeague[0].sourceKey, viaPlayer[0].sourceKey, 'shared dedup key across routes');
+  for (const item of [...viaLeague, ...viaPlayer]) engine.accept(item);
+  assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
+  assert.equal(engine.snapshot('2026-10-03').injuries[0].evidence.length, 1);
+  assert.equal(engine.drainChanges().filter(c => c.kind === 'injury').length, 1);
 });

@@ -272,7 +272,11 @@ function renderHealth() {
     panel.textContent = `No games currently in progress on this slate. In-game injury monitoring is idle; scheduled and final games still appear. ${hosted ? 'Hosted collector remains online.' : 'Browser polling stops when this page closes.'}`;
   } else {
     panel.className = 'health-panel good';
-    panel.textContent = `● ESPN scoreboard, play-by-play and injury feed recently reached. ${issues.join('. ') || 'Source-linked updates only; coverage is not guaranteed.'}`;
+    // Report real per-player coverage; a partial sweep must not read as full monitoring.
+    const playerNews = snapshot.health?.['ESPN player news'];
+    const coverage = hosted && live && Number(playerNews?.participants)
+      ? ` Player-news sweep reached ${playerNews.polledDistinct || 0} of ${playerNews.participants} players on the floor — it supplements the structured injury feed, it does not replace it.` : '';
+    panel.textContent = `● ESPN scoreboard, play-by-play and injury feed recently reached. ${issues.join('. ') || 'Source-linked updates only; coverage is not guaranteed.'}${coverage}`;
   }
   const last = Math.max(scoreboard?.okAt || 0, injuries?.okAt || 0, pbp?.okAt || 0);
   if ($('footer-update')) $('footer-update').textContent = last ? `Latest successful source poll ${time(last, true)}` : 'Waiting for a successful source poll';
