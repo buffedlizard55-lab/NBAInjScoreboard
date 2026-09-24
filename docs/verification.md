@@ -120,6 +120,35 @@ candidates since the first commit.** Every claim below was produced by a tool ca
 - The per-**team** news endpoint was probed for and **not** verified, so it was not added. Adding a
   source whose shape has not been observed is how the original bug happened.
 
+### Independent confirmation from the GitHub Actions runner
+
+The same commit's read-only probe ran on a CI runner with real egress
+([run 36031723925](https://github.com/buffedlizard55-lab/NBAInjScoreboard/actions/runs/36031723925)).
+This is the strongest evidence in this repository, because it reached the live endpoints directly:
+
+| Source | Status | Observed |
+| --- | --- | --- |
+| ESPN current scoreboard | `200`, CORS `*` | `events: 0` on 2026-09-24 |
+| ESPN archived scoreboard (2026-04-25) | `200`, CORS `*` | 4 games, first id `401869414` |
+| ESPN archived summary | `200`, CORS `*` | 513 plays, 2 box-score teams, `keys[0] === "minutes"`, first athlete id `6440` (short legacy id), first play participant has `athlete.id` `4277847`; parsed to **20 participants, 160 plays, 2 reviews** |
+| **ESPN injuries** | `200`, CORS `*` | 27 teams, **73 rows, `rowsWithAthleteId: 0`, `rowsWithRecoverableAthleteId: 73`, `parsedCandidates: 56`**, athlete keys exactly `firstName, lastName, displayName, shortName, links, headshot, position, team, notes, status`, publishers `["RotoWire"]`, `source.description` `basic/manual` |
+| ESPN news | `200`, CORS `*` | 50 articles, 32 athlete-tagged, `parsedCandidates: 0` (offseason) |
+| ESPN player news | `200`, CORS `*` | `keys: ["header","articles"]`, `articles: 0` — the new source's contract |
+| NBA official scoreboard + archived PBP | `403` (with and without `Origin`) | blocked; still exercised only against synthetic fixtures |
+| NBA.com news + article | `200`, **no CORS** | index exposes 12 latest + 9 featured; a dated article's JSON-LD parsed; browser polling of NBA.com is impossible |
+| NBA official injury-report index | `200` | **0** PDF links; no historical filename reused as current |
+
+The decisive line is `rows=73 withAthleteId=0 recoverable=73 parsed=56`: **not one of 73 real injury
+rows carried `athlete.id`**, and the fix recovers every one. Before this change all 73 were dropped,
+which is exactly the reported symptom. `keys[0] === "minutes"` validates the minutes-index lookup,
+the `6440` athlete id confirms short legacy ids must stay legal, and play participants carrying
+`athlete.id` confirms the play-by-play participation path was never the broken half.
+
+Honest caveat on the same line: `parsed=56` means 17 of 73 rows were filtered by the medical,
+future-game and available/active gates. Those exclusions look correct in aggregate but have not been
+audited row by row, and cannot be until a live game shows which filtered rows were genuine in-game
+injuries.
+
 ### Still not verified anywhere
 
 - No NBA game was in progress on 2026-09-24 (`?dates=20260924` returns `events: []`; the 2026-27
