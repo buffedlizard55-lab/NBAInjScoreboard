@@ -37,6 +37,12 @@ export class Collector extends EventEmitter {
     this.lastNews = null;
     this.lastNbaCandidates = new Map();
     this.lastAthleteNews = new Map();
+    // Sources can report an incident before the next box-score/PBP response has
+    // recorded the player's first action. Keep that source-linked candidate for
+    // a bounded retry window instead of losing it when a rolling news feed moves on.
+    this.pendingCandidates = new Map((Array.isArray(saved?.pendingCandidates) ? saved.pendingCandidates : [])
+      .filter(entry => entry?.candidate?.sourceKey && Number.isFinite(entry?.queuedAt))
+      .map(entry => [entry.candidate.sourceKey, entry]));
     this.athleteCursor = 0;
     this.athletePolled = new Set();
     this.articleChecked = new Map();
@@ -51,6 +57,31 @@ export class Collector extends EventEmitter {
       this.engine.source(name, message(error));
       return false;
     }
+  }
+  acceptCandidate(candidate) {
+    const accepted = this.engine.accept(candidate);
+    if (accepted || !candidate?.sourceKey || this.engine.seen.has(candidate.sourceKey)) {
+      this.pendingCandidates.delete(candidate?.sourceKey);
+      return accepted;
+    }
+    if (!this.pendingCandidates.has(candidate.sourceKey)) {
+      this.pendingCandidates.set(candidate.sourceKey, { candidate, queuedAt: this.now() });
+      // A bad upstream burst must not grow local state without bound. The oldest
+      // candidates are least useful because they are closest to the age gate.
+      while (this.pendingCandidates.size > 600) this.pendingCandidates.delete(this.pendingCandidates.keys().next().value);
+    }
+    return false;
+  }
+  retryPendingCandidates() {
+    const now = this.now();
+    for (const [key, entry] of this.pendingCandidates) {
+      const candidate = entry?.candidate;
+      if (!candidate || now - entry.queuedAt > 3 * 3_600_000 || now - candidate.publishedAt > 24 * 3_600_000 ||
+        this.engine.seen.has(key) || this.engine.accept(candidate)) this.pendingCandidates.delete(key);
+    }
+  }
+  ingestCandidates(items) {
+    for (const item of items) this.acceptCandidate(item);
   }
   async scoreboardTick() {
     const today = easternDate(new Date(this.now()));
@@ -77,10 +108,11 @@ export class Collector extends EventEmitter {
         await this.attempt('ESPN play-by-play', urls.summary(game.id), data => {
           this.engine.summary(game.id, data);
           // An injury may be published before ESPN's box score shows first minutes.
-          if (this.lastInjuries) for (const item of parseEspnInjuries(this.lastInjuries)) this.engine.accept(item);
-          if (this.lastNews) for (const item of parseEspnNews(this.lastNews)) this.engine.accept(item);
-          for (const items of this.lastAthleteNews.values()) for (const item of items) this.engine.accept(item);
-          for (const item of this.lastNbaCandidates.values()) this.engine.accept(item);
+          if (this.lastInjuries) this.ingestCandidates(parseEspnInjuries(this.lastInjuries));
+          if (this.lastNews) this.ingestCandidates(parseEspnNews(this.lastNews));
+          for (const items of this.lastAthleteNews.values()) this.ingestCandidates(items);
+          this.ingestCandidates(this.lastNbaCandidates.values());
+          this.retryPendingCandidates();
         });
         if (game.officialId) await this.attempt('NBA official play-by-play', urls.nbaPbp(game.officialId), data => this.engine.nbaPbp(game.id, data));
       }
@@ -89,11 +121,23 @@ export class Collector extends EventEmitter {
     this.publish();
   }
   async injuryTick() {
-    if (this.live) await this.attempt('ESPN injuries', urls.injuries, data => { this.lastInjuries = data; this.engine.injuriesFeed(data); });
+    if (this.live) await this.attempt('ESPN injuries', urls.injuries, data => {
+      const items = parseEspnInjuries(data); // validate before caching/replaying this payload
+      this.lastInjuries = data;
+      this.ingestCandidates(items);
+      this.engine.source('ESPN injuries');
+      this.retryPendingCandidates();
+    });
     this.publish();
   }
   async newsTick() {
-    if (this.live) await this.attempt('ESPN news', urls.news, data => { this.lastNews = data; this.engine.newsFeed(data); });
+    if (this.live) await this.attempt('ESPN news', urls.news, data => {
+      const items = parseEspnNews(data); // validate before caching/replaying this payload
+      this.lastNews = data;
+      this.ingestCandidates(items);
+      this.engine.source('ESPN news');
+      this.retryPendingCandidates();
+    });
     this.publish();
   }
   /**
@@ -117,7 +161,8 @@ export class Collector extends EventEmitter {
       const ok = await this.attempt('ESPN player news', urls.athleteNews(player.id), data => {
         const items = parseAthleteNews(data, player.id, { name: player.name, others: names.filter(n => n !== player.name) });
         this.lastAthleteNews.set(player.id, items);
-        for (const item of items) this.engine.accept(item);
+        this.ingestCandidates(items);
+        this.retryPendingCandidates();
       });
       if (ok) { checked++; this.athletePolled.add(player.id); }
     }
@@ -148,7 +193,8 @@ export class Collector extends EventEmitter {
           checked++;
           if (candidate) {
             this.lastNbaCandidates.set(candidate.sourceKey, candidate);
-            this.engine.accept(candidate);
+            this.acceptCandidate(candidate);
+            this.retryPendingCandidates();
           }
         } catch (error) { articleFailure = message(error); }
       }
@@ -164,7 +210,7 @@ export class Collector extends EventEmitter {
     this.emit('update', changes);
     if (force || this.now() - this.lastWrite > 5000) {
       this.lastWrite = this.now();
-      const json = JSON.stringify(this.engine.export());
+      const json = JSON.stringify({ ...this.engine.export(), pendingCandidates: [...this.pendingCandidates.values()] });
       this.writeQueue = this.writeQueue.then(async () => {
         await mkdir(dirname(this.statePath), { recursive: true });
         await writeFile(`${this.statePath}.tmp`, json);

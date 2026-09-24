@@ -1,7 +1,7 @@
 import { classifyReport, hasMedicalDetail, plainName } from './engine.mjs';
 
 const trim = value => String(value || '').replace(/\s+/g, ' ').trim();
-const signal = /\b(injur\w*|illness|concussion|sore\w*|sprain|strain|fracture|tear|torn|pain|hurt|exits?|leaves?|left|ruled out|questionable to return|will not return|won't return|returned to (?:the )?game)\b/i;
+const signal = /\b(injur\w*|illness|concussion|sore\w*|sprain|strain|fracture|tear|torn|pain|hurt|exit(?:s|ed|ing)?|leaves?|left|ruled out|questionable to return|will not return|won't return|returned to (?:the )?game)\b/i;
 const attr = /<script\b[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i;
 const jsonLd = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
 const headlineTag = /<h1\b[^>]*>([^<]{1,400})<\/h1>/i;

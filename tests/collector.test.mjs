@@ -64,6 +64,22 @@ test('today loads even when yesterday fails; delayed summary proof replays earli
     await second.stop();
   } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
 });
+test('pending unmatched source evidence persists across a collector restart', async () => {
+  const path = join(tmpdir(), `nba-pending-${randomUUID()}.json`);
+  const candidate = { sourceKey: 'pending-story', publishedAt: NOW, athleteId: '1234567', name: 'Test Player',
+    status: 'reported', text: 'Test Player exited with a left ankle sprain.', source: 'Test source', sourceUrl: 'https://www.espn.com/nba/story/_/id/1/test' };
+  try {
+    const collector = new Collector({ now: () => NOW, statePath: path, client: { json: async () => ({}) } });
+    collector.pendingCandidates.set(candidate.sourceKey, { candidate, queuedAt: NOW });
+    await collector.stop();
+    const saved = await loadSaved(path);
+    assert.equal(saved.pendingCandidates.length, 1);
+    const restarted = new Collector({ now: () => NOW, statePath: path, saved, client: { json: async () => ({}) } });
+    assert.equal(restarted.pendingCandidates.get(candidate.sourceKey).candidate.text, candidate.text);
+    await restarted.stop();
+  } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+});
+
 test('scoreboard outage preserves current games but suspends new alerts when its live state becomes stale', () => {
   let current = NOW;
   const engine = new Engine({ now: () => current });
@@ -127,8 +143,10 @@ test('collector pipeline: a real-shaped ESPN injury row becomes an alert in both
     await collector.scoreboardTick();
     await collector.injuryTick();  // injuries arrive before the box score proves participation
     assert.equal(collector.engine.snapshot('2026-10-03').injuries.length, 0);
+    assert.equal(collector.pendingCandidates.size, 1, 'unmatched source evidence stays queued instead of disappearing');
     await collector.gameTick();    // participation proof arrives, pending report is retried
     const state = collector.engine.snapshot('2026-10-03');
+    assert.equal(collector.pendingCandidates.size, 0, 'accepted evidence leaves the retry queue');
     assert.equal(state.injuries.length, 1);
     assert.equal(state.injuries[0].athleteId, '4432166');
     assert.equal(state.injuries[0].player, 'Cade Cunningham');
