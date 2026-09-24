@@ -13,7 +13,7 @@ const plainName = value => compact(value).normalize('NFD').replace(/[\u0300-\u03
 const gameUrl = id => `https://www.espn.com/nba/game/_/gameId/${id}`;
 const injuryListUrl = 'https://www.espn.com/nba/injuries';
 const hasMedicalDetail = value => /\b(injur\w*|illness|concussion|protocol|pain|sore\w*|strain|sprain|bruise|contusion|fracture|tear|torn|swelling|tightness|surgery|ankle|knee|foot|hamstring|calf|hip|groin|back|shoulder|wrist|hand|elbow|neck|quad|achilles|head|finger|thumb|toe|rib|abdominal|oblique|migrain\w*|cramp\w*|dizz\w*|limp\w*)\b/i.test(str(value));
-const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for) (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)'?s? game)\b/i.test(str(value)) && !/\b(return|remainder|tonight|this game)\b/i.test(str(value));
+const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for|out|questionable|doubtful) (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?(?: game)?)\b/i.test(str(value)) && !/\b(to return|remainder|tonight|this game)\b/i.test(str(value));
 
 export function easternDate(now = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -77,6 +77,10 @@ function espnPlays(game, data) {
     }
   }
   const plays = asArray(data.plays);
+  const opening = plays.find(play => Number(play.period?.number) === 1 &&
+    !/\b(timeout|review|challenge|injury|start|end of)\b/i.test(str(play.type?.text)) &&
+    dateMs(play.wallclock) >= game.start - 10 * 60_000 && dateMs(play.wallclock) < game.start + 2 * 3_600_000);
+  if (opening) game.liveStartedAt = dateMs(opening.wallclock);
   for (const play of plays) {
     // An athlete on a roster/timeout/review isn't necessarily a player who checked in.
     if (/\b(timeout|review|challenge|injury|start|end of|eject)\b/i.test(str(play.type?.text)) || !play.type?.text) continue;
@@ -128,14 +132,14 @@ function ingestReviews(engine, game, plays) {
     const review = existing || { id: key, gameId: game.id, kind: 'review', type: signal.type,
       outcome: '', period, clock, time: play.time || engine.now(), evidence: [], firstObserved: engine.now() };
     if (signal.type === 'challenge' && signal.found) review.type = 'challenge';
-    if (signal.result) review.outcome = signal.result;
-    review.evidence.push({ key: sourceKey, text: play.text, url: play.sourceUrl, source: play.source });
-    review.text = play.text;
-    review.sourceUrl = play.sourceUrl;
-    review.source = play.source;
+    const was = review.outcome;
+    if (signal.result) review.outcome = review.outcome && review.outcome !== signal.result ? 'conflict' : signal.result;
+    review.evidence.push({ key: sourceKey, text: play.text, url: play.sourceUrl, source: play.source, result: signal.result });
+    if (signal.result || !was) { review.text = play.text; review.sourceUrl = play.sourceUrl; review.source = play.source; }
+    review.lastEventTime = Math.max(review.lastEventTime || 0, play.time || 0);
     review.updatedAt = engine.now();
     engine.reviews.set(key, review);
-    if (!existing || signal.result) engine.changed.push({ id: `${key}:${review.outcome || 'started'}`, kind: 'review', gameId: game.id });
+    if (!existing || was !== review.outcome) engine.changed.push({ id: `${key}:${review.outcome || 'started'}`, kind: 'review', gameId: game.id });
   }
 }
 
@@ -206,7 +210,7 @@ function candidateForGame(engine, candidate, requestedGameId = '') {
   const games = requestedGameId ? [engine.games.get(requestedGameId)] : [...engine.games.values()];
   for (const game of games) {
     if (!game || game.phase !== 'in' || !Number.isFinite(game.lastScoreboardAt) || now - game.lastScoreboardAt > 90_000 ||
-      candidate.publishedAt < game.start ||
+      candidate.publishedAt < Math.max(game.start, game.liveStartedAt || 0) ||
       ![game.away.id, game.home.id].some(id => !candidate.teamId || id === candidate.teamId)) continue;
     const player = candidate.athleteId ? game.participants[candidate.athleteId] :
       Object.values(game.participants).find(p => plainName(p.name) === plainName(candidate.name));
@@ -264,7 +268,7 @@ export class Engine {
     for (const entry of data.scoreboard.games) {
       const id = str(entry.gameId);
       if (!/^\d{10}$/.test(id)) continue;
-      const candidates = [...this.games.values()].filter(game => game.away.abbr === entry.awayTeam?.teamTricode && game.home.abbr === entry.homeTeam?.teamTricode && Math.abs(game.start - dateMs(entry.gameTimeUTC)) < 12 * 3_600_000);
+      const candidates = [...this.games.values()].filter(game => game.away.abbr === entry.awayTeam?.teamTricode && game.home.abbr === entry.homeTeam?.teamTricode && Math.abs(game.start - dateMs(entry.gameTimeUTC)) < 3 * 3_600_000);
       if (candidates.length === 1) candidates[0].officialId = id;
     }
     this.source('NBA official scoreboard');
@@ -328,8 +332,18 @@ export class Engine {
   }
   curated(candidate) {
     const game = this.games.get(str(candidate.gameId));
-    if (!game || !safeId(candidate.athleteId) || !game.participants[str(candidate.athleteId)] ||
-      !['reported', 'questionable', 'out', 'confirmed_out', 'returned'].includes(candidate.status)) return false;
+    const player = game?.participants?.[str(candidate.athleteId)];
+    const wording = compact(candidate.text);
+    const normalized = ` ${plainName(wording)} `;
+    const statusEvidence = {
+      reported: hasMedicalDetail(wording),
+      questionable: /\bquestionable\b/i.test(wording) && hasMedicalDetail(wording),
+      out: /\b(ruled out|out)\b/i.test(wording) && hasMedicalDetail(wording),
+      confirmed_out: /\b(will not return|won't return|out for (?:the )?(?:rest|remainder) of (?:the )?game)\b/i.test(wording),
+      returned: /\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(wording)
+    };
+    if (!game || !safeId(candidate.athleteId) || !player || !statusEvidence[candidate.status] ||
+      !normalized.includes(` ${plainName(player.name)} `)) return false;
     return this.accept({ ...candidate, sourceKey: `curated:${candidate.sourceUrl}:${candidate.publishedAt}:${candidate.athleteId}:${candidate.status}` }, game.id);
   }
   plays(game) {
@@ -347,7 +361,7 @@ export class Engine {
     const plays = games.flatMap(g => this.plays(g).slice(-65));
     const newest = (a, b) => (b.time || b.updatedAt || 0) - (a.time || a.updatedAt || 0);
     return { mode: this.mode, day, generatedAt: this.now(), games, injuries: injuries.sort(newest).slice(0, 250),
-      reviews: reviews.sort(newest).slice(0, 200),
+      reviews: reviews.sort((a, b) => (b.lastEventTime || b.time || 0) - (a.lastEventTime || a.time || 0)).slice(0, 200),
       feed: [...plays, ...injuries].sort(newest).slice(0, 200), health: this.health };
   }
   export() {

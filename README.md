@@ -41,7 +41,7 @@ Set `INJURY_INGEST_TOKEN` to a long random value (24+ characters) **in the serve
 curl -X POST https://YOUR-HOST/api/reports \
   -H "Authorization: Bearer $INJURY_INGEST_TOKEN" \
   -H 'Content-Type: application/json' \
-  --data '{"gameId":"ESPN_EVENT_ID","athleteId":"ESPN_ATHLETE_ID","status":"questionable","publishedAt":"SOURCE_ISO_TIMESTAMP","source":"TEAM_OR_REPORTER","sourceUrl":"https://www.nba.com/news/ORIGINAL_ARTICLE","text":"Exact, verified source wording of at least twenty characters"}'
+  --data '{"gameId":"ESPN_EVENT_ID","athleteId":"ESPN_ATHLETE_ID","status":"questionable","publishedAt":"SOURCE_ISO_TIMESTAMP","source":"TEAM_OR_REPORTER","sourceUrl":"https://www.nba.com/news/ORIGINAL_ARTICLE","text":"FULL_PLAYER_NAME is questionable to return due to the described medical issue"}'
 ```
 
 The backend still rejects non-live games, non-participants, missing medical context in automated feeds, duplicate editorial entries, implausible times and unauthorized submissions. Supported editorial statuses are `reported`, `questionable`, `out`, `confirmed_out`, `returned`. A structured audit log (no token) is written to `.runtime/editorial.jsonl`. **Do not submit example or synthetic records to a real collector.**

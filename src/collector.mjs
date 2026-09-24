@@ -25,6 +25,7 @@ export class Collector extends EventEmitter {
     this.timers = new Set();
     this.running = false;
     this.lastWrite = 0;
+    this.persistenceError = '';
     this.writeQueue = Promise.resolve();
     this.lastInjuries = null;
     this.lastNews = null;
@@ -92,7 +93,13 @@ export class Collector extends EventEmitter {
         await mkdir(dirname(this.statePath), { recursive: true });
         await writeFile(`${this.statePath}.tmp`, json);
         await rename(`${this.statePath}.tmp`, this.statePath);
-      }).catch(error => console.error(`Cannot persist state: ${message(error)}`));
+        this.persistenceError = '';
+        this.engine.source('Local event storage');
+      }).catch(error => {
+        this.persistenceError = message(error);
+        this.engine.source('Local event storage', this.persistenceError);
+        console.error(`Cannot persist state: ${this.persistenceError}`);
+      });
     }
   }
   runLoop(fn, delay) {

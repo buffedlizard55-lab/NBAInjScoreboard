@@ -247,11 +247,13 @@ function renderHealth() {
   const injuries = snapshot.health?.['ESPN injuries'];
   const pbp = snapshot.health?.['ESPN play-by-play'];
   const recent = field => !!(field?.okAt && !field.error && Date.now() - field.okAt < (live ? 65_000 : 120_000));
-  const failed = !recent(scoreboard) || (live && (!recent(injuries) || !recent(pbp)));
+  const storage = snapshot.health?.['Local event storage'];
+  const failed = !recent(scoreboard) || (live && (!recent(injuries) || !recent(pbp))) || (hosted && !!storage?.error);
   const issues = [];
   if (!recent(scoreboard)) issues.push(`Scoreboard: ${scoreboard?.error || 'not yet verified'}`);
   if (live && !recent(injuries)) issues.push(`Injuries: ${injuries?.error || 'not yet verified'}`);
   if (live && !recent(pbp)) issues.push(`Play-by-play: ${pbp?.error || 'not yet verified'}`);
+  if (hosted && storage?.error) issues.push(`Event storage: ${storage.error}`);
   const official = snapshot.health?.['NBA official play-by-play'];
   if (live && official?.error && recent(pbp)) issues.push('NBA official PBP unavailable; ESPN fallback');
   mode.textContent = hosted ? 'Hosted collector · continuous polling' : 'Browser polling · only while open';
@@ -370,12 +372,16 @@ function renderAlerts() {
 function reviewCard(review) {
   const card = node('article', 'alert-card review-card'), side = node('div', 'alert-aside'), body = node('div', 'alert-body');
   side.append(node('strong', '', `Q${review.period || '—'} · ${review.clock || '—'}`), node('span', '', time(review.time, true)));
-  body.append(node('span', `status-pill ${review.outcome || 'review'}`, review.outcome === 'overturned' ? 'Overturned (stated)' : review.outcome === 'stands' ? 'Stands (stated)' : 'Outcome not stated'));
+  body.append(node('span', `status-pill ${review.outcome || 'review'}`, review.outcome === 'overturned' ? 'Overturned (stated)' : review.outcome === 'stands' ? 'Stands (stated)' : review.outcome === 'conflict' ? 'Conflicting source rulings' : 'Outcome not stated'));
   body.append(node('h3', '', review.type === 'challenge' ? 'Coach’s challenge' : 'Replay review'));
   body.append(node('span', 'team-caption', `${matchup(byId(review.gameId))} · Challenging team not specified unless in source text`));
   body.append(node('p', '', review.text));
   const entries = (review.evidence || []).slice(-3);
   evidenceRows(body, entries.map(e => ({ ...e, publishedAt: review.time })));
+  if (review.outcome === 'conflict') {
+    body.append(node('div', 'proof', 'Sources disagree. Check each original play-by-play entry before trusting a ruling.'));
+    for (const entry of entries) body.append(node('div', 'source-quote', `${entry.source}: ${entry.text}`));
+  }
   body.append(node('div', 'proof', 'Ruling and score impact are not inferred · '));
   body.lastChild.append(link(gameLink(review.gameId), 'Game center ↗'));
   card.append(side, body); return card;

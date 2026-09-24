@@ -42,6 +42,7 @@ test('a live player with box-score minutes can be reported; feed and alerts shar
 test('do not turn old pregame, future game, personal reason, unrelated team, DNP or final-game items into live alerts', () => {
   const engine = ready();
   engine.injuriesFeed(injury({ date: '2026-10-03T22:50:00Z' }));
+  engine.injuriesFeed(injury({ date: '2026-10-03T23:02:00Z' })); // after scheduled tip, before first recorded basketball action
   engine.injuriesFeed(injury({ id: '7654321' }));
   engine.injuriesFeed(injury({ team: '3' }));
   engine.injuriesFeed(injury({ text: 'Test Player is out for personal reasons.' }));
@@ -103,6 +104,17 @@ test('separate reviews use explicit PBP; never invent an injury or review outcom
   assert.equal(reviewSignal('Timeout after shot').found, false);
   assert.equal(reviewSignal('Instant Replay: out of bounds').result, '');
 });
+test('conflicting explicit replay outcomes are flagged, not assigned a fabricated winner', () => {
+  const engine = ready();
+  engine.nbaScoreboard(nbaScoreboard());
+  engine.nbaPbp(GAME_ID, nbaPbp());
+  const espn = summary();
+  espn.plays.push({ id: `${GAME_ID}999`, wallclock: '2026-10-03T23:09:00Z', type: { text: 'Instant Replay' },
+    text: 'Replay Review: call stands', period: { number: 1 }, clock: { displayValue: '10:00' }, awayScore: 2, homeScore: 0 });
+  engine.summary(GAME_ID, espn);
+  assert.equal(engine.snapshot('2026-10-03').reviews[0].outcome, 'conflict');
+  assert.equal(engine.snapshot('2026-10-03').reviews[0].evidence.length, 3);
+});
 test('review text is not misclassified as an injury report; no made-up future scores', () => {
   assert.equal(classifyReport('Player went to the bench'), '');
   assert.equal(classifyReport('Player will not return to the game after a left ankle sprain'), 'confirmed_out');
@@ -136,6 +148,8 @@ test('editorial intake still needs live participation and is deduplicated', () =
   assert.equal(engine.curated(item), true);
   assert.equal(engine.curated(item), false);
   assert.equal(engine.curated({ ...item, athleteId: '7654321' }), false);
+  assert.equal(engine.curated({ ...item, status: 'confirmed_out' }), false); // no won't-return wording
+  assert.equal(engine.curated({ ...item, text: 'Another person has a right ankle injury.' }), false);
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
 });
 test('ESPN raw injury shape and timestamps fail closed', () => {

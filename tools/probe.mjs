@@ -17,6 +17,14 @@ const probes = [
   ['NBA official injury-report index HTML', 'https://official.nba.com/nba-injury-report-2025-26-season/', null]
 ];
 
+function log(result) {
+  const line = JSON.stringify(result);
+  console.log(line);
+  // Actions' log archive may be inaccessible to an API-only checkout. Check-run
+  // annotations are also readable through the GitHub REST API for PR review.
+  if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice title=${result.name}::${line.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
+}
+
 for (const [name, url, extract] of probes) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
@@ -29,8 +37,8 @@ for (const [name, url, extract] of probes) {
     else if (!extract && response.ok) shape = { pdfLinks: (raw.match(/Injury-Report_[^"'\s<>]+\.pdf/g) || []).length,
       newsLinks: (raw.match(/href=["'][^"']*\/news\/[\w-]+["']/g) || []).length,
       dateMetadata: /article:published_time|datePublished/.test(raw) };
-    console.log(JSON.stringify({ name, status: response.status, cors: allow, bytes: raw.length, shape }));
+    log({ name, status: response.status, cors: allow, bytes: raw.length, shape });
   } catch (error) {
-    console.log(JSON.stringify({ name, error: error.name === 'AbortError' ? 'Timeout' : String(error.message) }));
+    log({ name, error: error.name === 'AbortError' ? 'Timeout' : String(error.message) });
   } finally { clearTimeout(timeout); }
 }

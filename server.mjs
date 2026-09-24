@@ -65,33 +65,42 @@ async function report(req, res) {
     if (!changed) return sendJson(res, 422, { error: 'No matching live game and confirmed participating player, or duplicate report' });
     // Audit metadata, not auth; do not expose the audit log from the static server.
     const log = resolve(dirname(statePath), 'editorial.jsonl');
-    await mkdir(dirname(log), { recursive: true });
-    await appendFile(log, `${JSON.stringify({ at: new Date().toISOString(), gameId: body.gameId, athleteId: body.athleteId, status: body.status, sourceUrl: body.sourceUrl })}\n`);
+    let auditWarning = '';
+    try {
+      await mkdir(dirname(log), { recursive: true });
+      await appendFile(log, `${JSON.stringify({ at: new Date().toISOString(), gameId: body.gameId, athleteId: body.athleteId, status: body.status, sourceUrl: body.sourceUrl })}\n`);
+    } catch (error) { auditWarning = 'Audit log write failed; check server storage'; console.error(auditWarning, error); }
     collector.publish(true);
-    sendJson(res, 201, { accepted: true });
+    await collector.writeQueue;
+    sendJson(res, 201, { accepted: true, ...((auditWarning || collector.persistenceError) ? { warning: [auditWarning, collector.persistenceError].filter(Boolean).join('; ') } : {}) });
   } catch (error) { sendJson(res, 400, { error: String(error.message).slice(0, 120) }); }
 }
 
 collector.on('update', changes => {
   const data = JSON.stringify({ changes, updatedAt: Date.now() });
   for (const client of clients) {
-    if (client.destroyed) clients.delete(client);
-    else client.write(`event: update\ndata: ${data}\n\n`);
+    if (client.destroyed || !client.write(`event: update\ndata: ${data}\n\n`)) {
+      client.end();
+      clients.delete(client); // do not accumulate unbounded buffers behind slow viewers
+    }
   }
 });
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); }
+  catch { return sendJson(res, 400, { error: 'Invalid URL' }); }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://a.espncdn.com; connect-src 'self' https://site.web.api.espn.com https://cdn.nba.com; object-src 'none'; base-uri 'self'; form-action 'self'");
-  if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { service: 'NBA injury collector', day: easternDate(), sources: collector.engine.health, activeGames: [...collector.engine.games.values()].filter(g => g.phase === 'in').length });
+  if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { service: 'NBA injury collector', day: easternDate(), sources: collector.engine.health, activeGames: [...collector.engine.games.values()].filter(g => g.phase === 'in' && Date.now() - g.lastScoreboardAt < 90_000).length });
   if (req.method === 'GET' && url.pathname === '/api/state') {
     const day = url.searchParams.get('date') || easternDate();
     if (!validDate(day)) return sendJson(res, 400, { error: 'Invalid date' });
     return sendJson(res, 200, collector.engine.snapshot(day));
   }
   if (req.method === 'GET' && url.pathname === '/api/stream') {
+    if (clients.size >= 200) return sendJson(res, 503, { error: 'Too many stream clients; use /api/state polling' });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write(': connected\n\n');
     clients.add(res);
@@ -113,8 +122,12 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, '0.0.0.0', () => console.log(`NBA scoreboard listening on 0.0.0.0:${port}`));
 collector.start();
+let closing = false;
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
+  if (closing) return;
+  closing = true;
   server.close();
+  for (const client of clients) client.end();
   await collector.stop();
   process.exit(0);
 });
