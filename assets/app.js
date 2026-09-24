@@ -248,12 +248,18 @@ function renderHealth() {
   const pbp = snapshot.health?.['ESPN play-by-play'];
   const recent = field => !!(field?.okAt && !field.error && Date.now() - field.okAt < (live ? 65_000 : 120_000));
   const storage = snapshot.health?.['Local event storage'];
-  const failed = !recent(scoreboard) || (live && (!recent(injuries) || !recent(pbp))) || (hosted && !!storage?.error);
+  const nbaNews = snapshot.health?.['NBA.com news index'];
+  const nbaArticles = snapshot.health?.['NBA.com articles'];
+  const nbaNewsHealthy = !!(nbaNews?.okAt && !nbaNews.error && Date.now() - nbaNews.okAt < 150_000);
+  const failed = !recent(scoreboard) || (live && (!recent(injuries) || !recent(pbp))) ||
+    (hosted && !!storage?.error) || (hosted && live && (!nbaNewsHealthy || !!nbaArticles?.error));
   const issues = [];
   if (!recent(scoreboard)) issues.push(`Scoreboard: ${scoreboard?.error || 'not yet verified'}`);
   if (live && !recent(injuries)) issues.push(`Injuries: ${injuries?.error || 'not yet verified'}`);
   if (live && !recent(pbp)) issues.push(`Play-by-play: ${pbp?.error || 'not yet verified'}`);
   if (hosted && storage?.error) issues.push(`Event storage: ${storage.error}`);
+  if (hosted && live && !nbaNewsHealthy) issues.push(`NBA.com news: ${nbaNews?.error || 'not yet verified'}`);
+  if (hosted && live && nbaArticles?.error) issues.push(`NBA.com article: ${nbaArticles.error}`);
   const official = snapshot.health?.['NBA official play-by-play'];
   if (live && official?.error && recent(pbp)) issues.push('NBA official PBP unavailable; ESPN fallback');
   mode.textContent = hosted ? 'Hosted collector · continuous polling' : 'Browser polling · only while open';

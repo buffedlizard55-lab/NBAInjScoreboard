@@ -47,6 +47,8 @@ test('do not turn old pregame, future game, personal reason, unrelated team, DNP
   engine.injuriesFeed(injury({ team: '3' }));
   engine.injuriesFeed(injury({ text: 'Test Player is out for personal reasons.' }));
   engine.injuriesFeed(injury({ text: "Test Player (ankle) is out for Tuesday's game." }));
+  engine.injuriesFeed(injury({ text: 'Test Player injured ankle but will not play Friday.' }));
+  engine.injuriesFeed(injury({ text: 'Test Player (ankle) may not play next Monday.' }));
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 0);
   engine.scoreboard('2026-10-03', liveScoreboard('post'));
   engine.injuriesFeed(injury());
@@ -125,6 +127,9 @@ test('review text is not misclassified as an injury report; no made-up future sc
 });
 test('news needs exact athlete in headline, timestamp, explicit injury wording and source URL', () => {
   assert.equal(parseEspnNews(news()).length, 1);
+  const duplicateCategory = news();
+  duplicateCategory.articles[0].categories.push(duplicateCategory.articles[0].categories[0]);
+  assert.equal(parseEspnNews(duplicateCategory).length, 1);
   assert.equal(parseEspnNews(news({ headline: 'Another Player injures knee' })).length, 0);
   assert.equal(parseEspnNews(news({ headline: 'Test Player signs a contract' })).length, 0);
   assert.equal(parseEspnNews(news({ date: 'invalid' })).length, 0);
@@ -132,6 +137,26 @@ test('news needs exact athlete in headline, timestamp, explicit injury wording a
   engine.newsFeed(news());
   assert.equal(engine.snapshot('2026-10-03').injuries[0].status, 'confirmed_out');
   assert.throws(() => parseEspnNews({}), /Invalid ESPN/);
+});
+test('name-only articles cannot select one of two live players with the same name', () => {
+  const engine = ready();
+  const second = structuredClone(liveScoreboard().events[0]);
+  second.id = '401999102';
+  second.competitions[0].competitors[0].team.id = '3';
+  second.competitions[0].competitors[1].team.id = '4';
+  const slate = liveScoreboard();
+  slate.events.push(second);
+  engine.scoreboard('2026-10-03', slate);
+  const details = summary();
+  details.header.id = second.id;
+  details.boxscore.players[0].team.id = '3';
+  details.boxscore.players[1].team.id = '4';
+  details.boxscore.players[0].statistics[0].athletes[0].athlete.id = '9999999';
+  details.plays = [];
+  engine.summary(second.id, details);
+  assert.equal(engine.accept({ sourceKey: 'untagged-story', publishedAt: Date.parse('2026-10-03T23:10:00Z'),
+    name: 'Test Player', status: 'questionable', text: 'Test Player questionable to return with an ankle injury.' }), false);
+  assert.equal(engine.snapshot('2026-10-03').injuries.length, 0);
 });
 test('official mapping requires unique teams and reasonable game time', () => {
   const engine = ready();

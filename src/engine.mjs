@@ -9,11 +9,11 @@ const str = value => value == null ? '' : String(value);
 const dateMs = value => { const ms = Date.parse(value); return Number.isFinite(ms) ? ms : 0; };
 const compact = value => str(value).replace(/\s+/g, ' ').trim();
 const safeId = value => /^\d{6,12}$/.test(str(value)) ? str(value) : '';
-const plainName = value => compact(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/gi, '').toLowerCase();
+export const plainName = value => compact(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/['’]s\b/gi, '').replace(/[^a-z0-9 ]/gi, '').toLowerCase();
 const gameUrl = id => `https://www.espn.com/nba/game/_/gameId/${id}`;
 const injuryListUrl = 'https://www.espn.com/nba/injuries';
 const hasMedicalDetail = value => /\b(injur\w*|illness|concussion|protocol|pain|sore\w*|strain|sprain|bruise|contusion|fracture|tear|torn|swelling|tightness|surgery|ankle|knee|foot|hamstring|calf|hip|groin|back|shoulder|wrist|hand|elbow|neck|quad|achilles|head|finger|thumb|toe|rib|abdominal|oblique|migrain\w*|cramp\w*|dizz\w*|limp\w*)\b/i.test(str(value));
-const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for|out|questionable|doubtful) (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?(?: game)?)\b/i.test(str(value)) && !/\b(to return|remainder|tonight|this game)\b/i.test(str(value));
+const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for|out|questionable|doubtful|play|playing|next) (?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?(?: game)?)\b/i.test(str(value)) && !/\b(to return|remainder|tonight|this game)\b/i.test(str(value));
 
 export function easternDate(now = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -191,8 +191,8 @@ export function parseEspnNews(data) {
     const url = str(article?.links?.web?.href);
     if (!status || !publishedAt || !/^https:\/\/www\.espn\.com\/nba\/story\//.test(url) || !headline) return [];
     const title = ` ${plainName(headline)} `;
-    const named = asArray(article.categories).filter(c => c.type === 'athlete' && safeId(c.athleteId) &&
-      plainName(c.description) && title.includes(` ${plainName(c.description)} `));
+    const named = [...new Map(asArray(article.categories).filter(c => c.type === 'athlete' && safeId(c.athleteId) &&
+      plainName(c.description) && title.includes(` ${plainName(c.description)} `)).map(c => [str(c.athleteId), c])).values()];
     // A multi-player headline cannot safely assign a designation to either player.
     if (named.length !== 1) return [];
     const c = named[0];
@@ -208,16 +208,17 @@ function candidateForGame(engine, candidate, requestedGameId = '') {
   const now = engine.now();
   if (!candidate?.publishedAt || candidate.publishedAt > now + 120_000 || now - candidate.publishedAt > DAY) return null;
   const games = requestedGameId ? [engine.games.get(requestedGameId)] : [...engine.games.values()];
+  const matches = [];
   for (const game of games) {
     if (!game || game.phase !== 'in' || !Number.isFinite(game.lastScoreboardAt) || now - game.lastScoreboardAt > 90_000 ||
       candidate.publishedAt < Math.max(game.start, game.liveStartedAt || 0) ||
       ![game.away.id, game.home.id].some(id => !candidate.teamId || id === candidate.teamId)) continue;
-    const player = candidate.athleteId ? game.participants[candidate.athleteId] :
-      Object.values(game.participants).find(p => plainName(p.name) === plainName(candidate.name));
-    if (!player || (candidate.teamId && player.teamId !== candidate.teamId)) continue;
-    return { game, player };
+    const players = candidate.athleteId ? [game.participants[candidate.athleteId]].filter(Boolean) :
+      Object.values(game.participants).filter(p => plainName(p.name) === plainName(candidate.name));
+    for (const player of players) if (!candidate.teamId || player.teamId === candidate.teamId) matches.push({ game, player });
   }
-  return null;
+  // An untagged article about a shared name must not be attached to the first game arbitrarily.
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export class Engine {

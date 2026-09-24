@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { Engine, easternDate, dateOffset, parseEspnInjuries, parseEspnNews } from './engine.mjs';
 import { SourceClient, urls } from './sources.mjs';
+import { nbaNewsLinks, nbaArticle } from './nba-news.mjs';
 
 const validGame = (game, now) => game.phase === 'in' && Number.isFinite(game.lastScoreboardAt) && now - game.lastScoreboardAt < 90_000;
 const message = error => error?.name === 'AbortError' ? 'Timed out' : String(error?.message || error).slice(0, 130);
@@ -29,6 +30,8 @@ export class Collector extends EventEmitter {
     this.writeQueue = Promise.resolve();
     this.lastInjuries = null;
     this.lastNews = null;
+    this.lastNbaCandidates = new Map();
+    this.articleChecked = new Map();
   }
   get live() { return [...this.engine.games.values()].some(g => validGame(g, this.now())); }
   async attempt(name, url, consume) {
@@ -68,6 +71,7 @@ export class Collector extends EventEmitter {
           // An injury may be published before ESPN's box score shows first minutes.
           if (this.lastInjuries) for (const item of parseEspnInjuries(this.lastInjuries)) this.engine.accept(item);
           if (this.lastNews) for (const item of parseEspnNews(this.lastNews)) this.engine.accept(item);
+          for (const item of this.lastNbaCandidates.values()) this.engine.accept(item);
         });
         if (game.officialId) await this.attempt('NBA official play-by-play', urls.nbaPbp(game.officialId), data => this.engine.nbaPbp(game.id, data));
       }
@@ -81,6 +85,36 @@ export class Collector extends EventEmitter {
   }
   async newsTick() {
     if (this.live) await this.attempt('ESPN news', urls.news, data => { this.lastNews = data; this.engine.newsFeed(data); });
+    this.publish();
+  }
+  async nbaNewsTick() {
+    const names = [...new Set([...this.engine.games.values()].filter(g => validGame(g, this.now()))
+      .flatMap(g => Object.values(g.participants).map(p => p.name)))];
+    if (!names.length) return;
+    try {
+      const index = await this.client.text(urls.nbaNews, urls.nbaNews);
+      const articles = nbaNewsLinks(index, names);
+      this.engine.source('NBA.com news index');
+      let articleFailure = '';
+      let checked = 0;
+      for (const article of articles) {
+        if (this.now() - (this.articleChecked.get(article.url) || 0) < 10 * 60_000) continue;
+        try {
+          const html = await this.client.text(article.url, article.url);
+          const candidate = nbaArticle(html, article.url, names);
+          this.articleChecked.set(article.url, this.now());
+          checked++;
+          if (candidate) {
+            this.lastNbaCandidates.set(candidate.sourceKey, candidate);
+            this.engine.accept(candidate);
+          }
+        } catch (error) { articleFailure = message(error); }
+      }
+      if (articleFailure || checked) this.engine.source('NBA.com articles', articleFailure || null);
+      // Keep delayed box-score replays bounded, and allow old article links to be checked again.
+      this.lastNbaCandidates = new Map([...this.lastNbaCandidates].slice(-200));
+      this.articleChecked = new Map([...this.articleChecked].filter(([, t]) => this.now() - t < 24 * 3_600_000));
+    } catch (error) { this.engine.source('NBA.com news index', message(error)); }
     this.publish();
   }
   publish(force = false) {
@@ -123,6 +157,8 @@ export class Collector extends EventEmitter {
     // cannot wait up to a minute for the first injury check after tip-off.
     this.runLoop(this.injuryTick, () => this.live ? 12_000 : 8_000);
     this.runLoop(this.newsTick, () => this.live ? 30_000 : 12_000);
+    // NBA.com has server-readable, dated articles but no CORS on its HTML pages.
+    this.runLoop(this.nbaNewsTick, () => this.live ? 45_000 : 12_000);
   }
   async stop() {
     this.running = false;
