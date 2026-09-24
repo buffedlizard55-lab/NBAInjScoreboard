@@ -25,6 +25,16 @@ test('scoreboard keeps real phases/teams/scores, rejects malformed payload', () 
   assert.throws(() => parseScoreboard({}, '2026-10-03'), /Invalid ESPN/);
   assert.throws(() => parseScoreboard(liveScoreboard(), '2026-02-30'), /Invalid ESPN/);
 });
+test('the current ET slate retains an in-progress prior-date overtime game, but not a completed one', () => {
+  const engine = new Engine({ now: () => NOW });
+  engine.scoreboard('2026-10-02', liveScoreboard('in'));
+  assert.equal(engine.snapshot('2026-10-03').games.length, 1);
+  engine.scoreboard('2026-10-02', liveScoreboard('post'));
+  assert.equal(engine.snapshot('2026-10-03').games.length, 0);
+  // A historical date remains isolated from a different day's active slate.
+  assert.equal(engine.snapshot('2026-10-04').games.length, 0);
+});
+
 test('a live player with box-score minutes can be reported; feed and alerts share the same update', () => {
   const engine = ready();
   engine.injuriesFeed(injury());
@@ -116,6 +126,16 @@ test('status progression; cross-source corroboration dedups; stale later source 
   restored.injuriesFeed(injury());
   assert.equal(restored.snapshot('2026-10-03').injuries.length, 3);
 });
+test('a later source-linked re-injury after a return remains a new status update', () => {
+  const engine = ready();
+  engine.injuriesFeed(injury({ date: '2026-10-03T23:10:00Z' }));
+  engine.injuriesFeed(injury({ status: 'Available', date: '2026-10-03T23:14:00Z',
+    text: 'Test Player returned to the game after a left ankle sprain.' }));
+  engine.injuriesFeed(injury({ status: 'Out', date: '2026-10-03T23:18:00Z',
+    text: 'Test Player exited with a right knee sprain.' }));
+  assert.deepEqual(engine.snapshot('2026-10-03').injuries.map(item => item.status), ['out', 'returned', 'questionable']);
+});
+
 test('separate reviews use explicit PBP; never invent an injury or review outcome', () => {
   const engine = ready();
   engine.nbaScoreboard(nbaScoreboard());
@@ -129,12 +149,29 @@ test('separate reviews use explicit PBP; never invent an injury or review outcom
   assert.equal(state.injuries.length, 0);
   engine.nbaPbp(GAME_ID, nbaPbp());
   state = engine.snapshot('2026-10-03');
+  assert.equal(state.reviews.length, 1, 'replaying a provider PBP window cannot manufacture a second review');
   assert.equal(state.reviews[0].evidence.length, 2);
   assert.equal(state.feed[0].source, 'NBA official play-by-play');
   assert.throws(() => engine.nbaPbp(GAME_ID, { game: { gameId: '0028800101', actions: [] } }), /Invalid NBA/);
   assert.equal(reviewSignal('Timeout after shot').found, false);
   assert.equal(reviewSignal('Instant Replay: out of bounds').result, '');
 });
+test('two same-provider reviews at one clock remain separate instead of being conflated', () => {
+  const engine = ready();
+  const espn = summary();
+  espn.plays.push(
+    { id: `${GAME_ID}30`, wallclock: '2026-10-03T23:07:00Z', type: { text: 'Instant Replay' }, text: "Coach's Challenge: foul under review", period: { number: 1 }, clock: { displayValue: '10:00' } },
+    { id: `${GAME_ID}31`, wallclock: '2026-10-03T23:08:00Z', type: { text: 'Instant Replay' }, text: 'Replay Review: call overturned', period: { number: 1 }, clock: { displayValue: '10:00' } },
+    { id: `${GAME_ID}32`, wallclock: '2026-10-03T23:09:00Z', type: { text: 'Instant Replay' }, text: "Coach's Challenge: different foul under review", period: { number: 1 }, clock: { displayValue: '10:00' } },
+    { id: `${GAME_ID}33`, wallclock: '2026-10-03T23:10:00Z', type: { text: 'Instant Replay' }, text: 'Replay Review: call stands', period: { number: 1 }, clock: { displayValue: '10:00' } }
+  );
+  engine.summary(GAME_ID, espn);
+  const reviews = engine.snapshot('2026-10-03').reviews;
+  assert.equal(reviews.length, 2);
+  assert.deepEqual(reviews.map(review => review.outcome).sort(), ['overturned', 'stands']);
+  assert.ok(reviews.every(review => review.outcome !== 'conflict'));
+});
+
 test('conflicting explicit replay outcomes are flagged, not assigned a fabricated winner', () => {
   const engine = ready();
   engine.nbaScoreboard(nbaScoreboard());
@@ -151,11 +188,14 @@ test('review text is not misclassified as an injury report; no made-up future sc
   assert.equal(classifyReport('Player will not return to the game after a left ankle sprain'), 'confirmed_out');
   assert.equal(classifyReport('Player (ankle) out for Tuesday\'s game'), '');
   assert.equal(classifyReport('Player injured his knee in the third quarter'), 'reported');
+  assert.equal(classifyReport('Player exited with a left ankle sprain'), 'reported', 'common past-tense in-game wording is not dropped');
   assert.equal(reviewSignal("Coach's Challenge: foul being reviewed").found, true);
   assert.equal(reviewSignal('Call stands').found, false);
 });
 test('news needs exact athlete in headline, timestamp, explicit injury wording and source URL', () => {
   assert.equal(parseEspnNews(news()).length, 1);
+  assert.equal(parseEspnNews(news({ headline: 'Test Player exited with left ankle sprain',
+    description: 'Test Player exited in the third quarter after a left ankle sprain.' }))[0].status, 'reported');
   const duplicateCategory = news();
   duplicateCategory.articles[0].categories.push(duplicateCategory.articles[0].categories[0]);
   assert.equal(parseEspnNews(duplicateCategory).length, 1);
@@ -212,6 +252,12 @@ test('editorial intake still needs live participation and is deduplicated', () =
 });
 test('ESPN raw injury shape and timestamps fail closed', () => {
   assert.equal(parseEspnInjuries(injury()).length, 1);
+  const twoField = injury({ text: 'Test Player left with a left ankle sprain.' });
+  twoField.injuries[0].injuries[0].longComment = 'The team says Test Player will not return to this game.';
+  const parsed = parseEspnInjuries(twoField);
+  assert.equal(parsed[0].status, 'confirmed_out', 'longComment must not be discarded when shortComment is medical');
+  assert.match(parsed[0].text, /left with a left ankle sprain/);
+  assert.match(parsed[0].text, /will not return to this game/);
   assert.equal(parseEspnInjuries(injury({ date: '' })).length, 0);
   assert.equal(parseEspnInjuries(injury({ text: 'Out - personal reasons' })).length, 0);
   assert.throws(() => parseEspnInjuries({}), /Invalid ESPN/);

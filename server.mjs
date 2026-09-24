@@ -39,6 +39,18 @@ function approvedUrl(raw) {
   } catch { return false; }
 }
 const str = value => value == null ? '' : String(value);
+function exactZonedTimestamp(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return NaN;
+  const [year, month, day, hour, minute, second = '0', fraction = ''] = match.slice(1);
+  // Date.parse normalizes impossible dates (for example Feb 30), so validate the
+  // source's calendar fields before accepting its claimed publication instant.
+  const calendar = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(`${fraction}000`.slice(1, 4))));
+  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 ||
+    calendar.getUTCDate() !== Number(day) || calendar.getUTCHours() !== Number(hour) ||
+    calendar.getUTCMinutes() !== Number(minute) || calendar.getUTCSeconds() !== Number(second)) return NaN;
+  return Date.parse(value);
+}
 
 async function receiveJson(req) {
   let text = '';
@@ -55,7 +67,10 @@ async function report(req, res) {
     const body = await receiveJson(req);
     const text = str(body.text).trim();
     const name = str(body.source).trim();
-    const publishedAt = Date.parse(body.publishedAt);
+    const publishedValue = str(body.publishedAt);
+    // Editorial reports need a source-provided instant, not an ambiguous local
+    // date/time that could be attributed to the wrong game around midnight.
+    const publishedAt = exactZonedTimestamp(publishedValue);
     if (!approvedUrl(body.sourceUrl) || text.length < 20 || text.length > 700 || name.length < 3 || name.length > 80 ||
       !Number.isFinite(publishedAt) || !/^[1-9]\d{0,11}$/.test(str(body.athleteId)) ||
       !/^\d{6,12}$/.test(str(body.gameId))) return sendJson(res, 422, { error: 'Invalid source, player, game, timestamp or evidence' });

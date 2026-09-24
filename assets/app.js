@@ -162,7 +162,15 @@ function startBrowserPolling(version) {
   browserScoreboard(version);
 }
 async function browserScoreboard(version) {
-  const primary = await browserCall('ESPN scoreboard', urls.scoreboard(day), data => engine.scoreboard(day, data), version);
+  // NBA games can run beyond midnight ET. On the current ET date, retain an
+  // in-progress prior-date game in the all-game slate just as the hosted
+  // collector does. Historical browsing deliberately fetches only that date.
+  const requests = [browserCall('ESPN scoreboard', urls.scoreboard(day), data => engine.scoreboard(day, data), version)];
+  if (isToday()) {
+    const previous = dateOffset(day, -1);
+    requests.push(browserCall('ESPN previous-day scoreboard', urls.scoreboard(previous), data => engine.scoreboard(previous, data), version));
+  }
+  const [primary] = await Promise.all(requests);
   if (version !== generation) return;
   browserSnapshot(); // optional CDN failures must not delay the first slate
   if (primary && !reportsStarted) {

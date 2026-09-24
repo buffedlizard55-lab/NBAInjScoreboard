@@ -175,14 +175,43 @@ function ingestReviews(engine, game, plays) {
     const signal = reviewSignal(play.text);
     const clock = normalizedClock(play.clock);
     const period = play.period;
-    const key = period && clock ? `${game.id}:q${period}:${clock}` : `${game.id}:${play.id}`;
-    const existing = engine.reviews.get(key);
+    const slot = period && clock ? `${game.id}:q${period}:${clock}` : `${game.id}:${play.id}`;
+    let key = slot;
+    let existing = engine.reviews.get(key);
+    const sourceKey = play.id;
+    // A repeated PBP window contains the original start again. Check it before
+    // looking for a same-clock sibling, otherwise a poll replay would manufacture
+    // a second review from that already-ingested start.
+    if (existing?.evidence?.some(e => e.key === sourceKey)) continue;
+    // A start and its later ruling normally share a clock, which lets ESPN and
+    // NBA PBP corroborate one review. But two starts from the SAME provider at
+    // that clock are separate events; do not silently merge them into one.
+    if (existing && signal.found && !signal.result && existing.evidence?.some(e => e.source === play.source && !e.result)) {
+      key = `${slot}:${sourceKey}`;
+      existing = engine.reviews.get(key);
+    }
+    // A second same-provider review at a shared clock can have a normal replay
+    // result line (so `found` is true). Prefer its unresolved sibling, but keep
+    // cross-provider disagreements on the original review as a visible conflict.
+    if (existing && signal.found && signal.result && existing.outcome && existing.evidence?.some(e => e.source === play.source)) {
+      const unresolved = [...engine.reviews.values()].filter(review => review.slot === slot && !review.outcome).sort((a, b) =>
+        (b.lastEventTime || b.time || 0) - (a.lastEventTime || a.time || 0))[0];
+      if (unresolved) { existing = unresolved; key = existing.id; }
+    }
+    // A result-only line has no review wording of its own. Attach it to the most
+    // recent unresolved review at that slot when one exists, rather than inventing
+    // a new review or overwriting an already resolved one.
+    if (!existing && signal.result && !signal.found) {
+      existing = [...engine.reviews.values()].filter(review => review.gameId === game.id &&
+        review.period === period && review.clock === clock && !review.outcome).sort((a, b) =>
+        (b.lastEventTime || b.time || 0) - (a.lastEventTime || a.time || 0))[0];
+      if (existing) key = existing.id;
+    }
     if (!signal.found && !(existing && signal.result)) continue;
     // Same clock can have multiple unrelated plays; never infer the challenging team or an outcome.
     if (!existing && !signal.found) continue;
-    const sourceKey = play.id;
     if (existing?.evidence?.some(e => e.key === sourceKey)) continue;
-    const review = existing || { id: key, gameId: game.id, kind: 'review', type: signal.type,
+    const review = existing || { id: key, slot, gameId: game.id, kind: 'review', type: signal.type,
       outcome: '', period, clock, time: play.time || engine.now(), evidence: [], firstObserved: engine.now() };
     if (signal.type === 'challenge' && signal.found) review.type = 'challenge';
     const was = review.outcome;
@@ -203,7 +232,7 @@ export function classifyReport(value) {
   if (/\b(questionable to return|return (?:is |was )?questionable|doubtful to return)\b/i.test(text)) return 'questionable';
   if (/\b(ruled out|will miss (?:the )?remainder of (?:the|tonight's) game)\b/i.test(text) && hasMedicalDetail(text)) return 'out';
   if (/\b(returned to (?:the )?game|back in (?:the )?game)\b/i.test(text) && hasMedicalDetail(text)) return 'returned';
-  if (hasMedicalDetail(text) && /\b(suffer\w*|sustain\w*|injur\w*|hurt|exits?|leaves?|left|limps?|helped off|went down|was shaken up)\b/i.test(text)) return 'reported';
+  if (hasMedicalDetail(text) && /\b(suffer\w*|sustain\w*|injur\w*|hurt|exit(?:s|ed|ing)?|leaves?|left|limps?|helped off|went down|was shaken up)\b/i.test(text)) return 'reported';
   return '';
 }
 
@@ -215,8 +244,12 @@ export function parseEspnInjuries(data) {
     // A mismatch can reflect a trade/incorrect roster; it cannot prove this game's team.
     if (row?.athlete?.team?.id && str(row.athlete.team.id) !== teamId) return [];
     const short = compact(row?.shortComment), long = compact(row?.longComment);
-    if (/\b(personal reasons|suspension|coach's decision|g league|rest day|not with (?:the )?team)\b/i.test(short) && !hasMedicalDetail(short)) return [];
-    const text = short && !hasMedicalDetail(short) && hasMedicalDetail(long) ? `${short} — ${long.slice(0, 350)}` : short || long;
+    const rawText = [short, long].filter((value, index, values) => value && values.indexOf(value) === index).join(' — ');
+    if (/\b(personal reasons|suspension|coach's decision|g league|rest day|not with (?:the )?team)\b/i.test(rawText) && !hasMedicalDetail(rawText)) return [];
+    // ESPN often puts the designation in shortComment and the in-game context
+    // (for example, "will not return") only in longComment. Keep both original
+    // fields as evidence rather than discarding the latter when the short text is medical.
+    const text = rawText.slice(0, 900);
     const publishedAt = dateMs(row?.date);
     if (!id || !teamId || !text || !publishedAt || !hasMedicalDetail(text)) return [];
     if (explicitlyFuture(text)) return [];
@@ -238,8 +271,8 @@ export function parseEspnInjuries(data) {
 
 // Shared news screening. A routine headline can tag an athlete while its
 // description mentions an OLD injury, so the signal must be in the headline.
-const NEWS_HEADLINE_SIGNAL = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|limp\w*|hurt|exits?|leaves?|left|ruled out|questionable to return|will not return|won't return|out for the game|returned to (?:the )?game)\b/i;
-const NEWS_AFTER_NAME = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|hurt|exits?|leaves?|left|ruled out|questionable|will not return|wont return|out)\b/i;
+const NEWS_HEADLINE_SIGNAL = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|limp\w*|hurt|exit(?:s|ed|ing)?|leaves?|left|ruled out|questionable to return|will not return|won't return|out for the game|returned to (?:the )?game)\b/i;
+const NEWS_AFTER_NAME = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|hurt|exit(?:s|ed|ing)?|leaves?|left|ruled out|questionable|will not return|wont return|out)\b/i;
 // Video clips and non-story URLs cannot be cited as an injury report.
 const newsStoryUrl = article => {
   const url = str(article?.links?.web?.href);
@@ -368,7 +401,11 @@ export class Engine {
       game.lastScoreboardAt = this.now();
       const old = this.games.get(game.id);
       if (old) Object.assign(old, { ...game, officialId: old.officialId, participants: old.participants,
-        espnPlays: old.espnPlays, nbaPlays: old.nbaPlays, lastSummary: old.lastSummary });
+        espnPlays: old.espnPlays, nbaPlays: old.nbaPlays, lastSummary: old.lastSummary,
+        // A scoreboard phase update has no last-play wallclock. Retaining these
+        // anchors keeps the intentionally bounded post-buzzer attribution window
+        // alive after the game flips from "in" to "post".
+        lastPlayAt: old.lastPlayAt, liveStartedAt: old.liveStartedAt });
       else this.games.set(game.id, game);
     }
     this.source(day === easternDate(new Date(this.now())) ? 'ESPN scoreboard' : 'ESPN previous-day scoreboard');
@@ -424,10 +461,15 @@ export class Engine {
     const priority = { reported: 0, questionable: 1, out: 2, confirmed_out: 3, returned: 4 };
     const downgrade = current && priority[candidate.status] < priority[current.status];
     const explicitChange = /\b(correction|retract\w*|upgraded|now (?:available|questionable)|questionable to return|returned to (?:the )?game|left (?:the )?game again|new injury)\b/i.test(candidate.text);
+    // A return is not a terminal state. A later source-linked report can describe
+    // a separate exit/medical issue even when it does not literally say "again".
+    // Never collapse that later incident into the earlier return merely because
+    // the status ordering is lower.
+    const afterReturn = current?.status === 'returned' && candidate.status !== 'returned';
     if (current && candidate.publishedAt < current.time && candidate.status !== current.status) {
       const previous = incident.updates.findLast(u => u.status === candidate.status && u.time <= candidate.publishedAt);
       if (previous) previous.evidence.push(evidence);
-    } else if (current && (current.status === candidate.status || (downgrade && !explicitChange))) {
+    } else if (current && (current.status === candidate.status || (downgrade && !explicitChange && !afterReturn))) {
       // A second publisher repeating a less specific status is corroboration, not a new alert.
       current.evidence.push(evidence);
     } else {
@@ -478,7 +520,13 @@ export class Engine {
     return nba.length && (!espn.length || official >= alternate - 20_000) ? nba : espn;
   }
   snapshot(day = easternDate(new Date(this.now()))) {
-    const games = [...this.games.values()].filter(g => g.day === day).sort((a, b) => a.start - b.start);
+    const currentDay = easternDate(new Date(this.now()));
+    const priorDay = dateOffset(currentDay, -1);
+    // After midnight ET, an overtime game still belongs to the prior schedule
+    // date, but it must remain on the default all-game live slate. Do not carry
+    // completed prior-day games into a user's historical/current view.
+    const games = [...this.games.values()].filter(g => g.day === day ||
+      (day === currentDay && g.day === priorDay && g.phase === 'in')).sort((a, b) => a.start - b.start);
     const ids = new Set(games.map(g => g.id));
     const injuries = [...this.injuries.values()].filter(i => ids.has(i.gameId)).flatMap(i => i.updates);
     const reviews = [...this.reviews.values()].filter(r => ids.has(r.gameId));

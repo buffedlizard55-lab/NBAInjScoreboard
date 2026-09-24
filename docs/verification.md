@@ -158,6 +158,45 @@ injuries.
   direct TLS here, so the official feed is still exercised only against synthetic fixtures.
 - Browser CORS behaviour from GitHub Pages at the real origin has not been observed in a browser.
 
+## Follow-up three-pass review — current branch
+
+This follow-up reviewed the implementation again after the captured-source parser fix. It did **not**
+claim or simulate a live NBA injury; the season is still inactive on the verification date.
+
+### Pass 1 — delivery and continuity
+
+- A source report that arrives before the next box-score/PBP response proves the player participated is
+  now kept in a bounded, persisted retry queue. The collector retries it when a summary arrives and
+  after later source polls; it expires after three hours, is capped at 600 records, and is saved across
+  a restart. This prevents a short-lived league/player-news item from being discarded solely because
+  participation lagged the source report.
+- The browser-only fallback now fetches both the current and preceding ET schedule date on the current
+  date. `Engine.snapshot()` includes only a prior-date game that is still `in` progress, so a game in
+  overtime past midnight does not vanish while completed prior-date games do not pollute the slate.
+- ESPN `shortComment` and `longComment` are preserved together (up to 900 characters) before status
+  classification. A later long-field "will not return" can no longer be lost when a medical short field
+  was already present. Common past-tense `exited` wording is now recognized in ESPN and NBA.com news.
+
+### Pass 2 — status/review edge cases
+
+- A later medically sourced report after a player has returned is a distinct update rather than being
+  silently treated as lower-priority corroboration. This avoids losing a genuine re-injury/second exit.
+- Review grouping still combines a start and ruling at one clock and keeps cross-provider conflicting
+  rulings visibly conflicted. Two starts from the **same** provider at the same period/clock now receive
+  separate records; their later outcomes attach to the unresolved sibling instead of being conflated.
+- Editorial intake now requires a timezone-qualified ISO timestamp (`Z` or a numeric offset), avoiding
+  ambiguous local timestamps around midnight.
+
+### Pass 3 — regression and local service check
+
+- `npm run check`: **43 passing tests**, including the real ESPN captures plus new queue/restart,
+  post-midnight slate, long-comment status, past-tense news, re-injury and same-clock review cases.
+- `git diff --check` passed. A local `npm start` check returned `200` for the four pages, health/state
+  APIs and SSE connection, and `404` for `/.git/config`. The local collector did not fabricate data
+  when upstream data was unavailable.
+- These are deterministic/code-path checks, **not** a measurement of live-game latency or coverage.
+  No live NBA game and no deployed always-on collector were available during this review.
+
 ## What prevents full real-time coverage (next session)
 
 1. **No always-on public collector is deployed.** GitHub Pages only runs browser polling while a tab is open. Deploy `npm start` on a monitored HTTPS host with a persistent volume, test its outbound access from that host and point users at that URL. GitHub Actions' scheduled runs have a 5-minute minimum and variable queue times; they cannot meet a near-real-time SLA.
