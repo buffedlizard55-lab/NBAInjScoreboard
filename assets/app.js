@@ -259,12 +259,17 @@ function renderHealth() {
   const nbaNews = snapshot.health?.['NBA.com news index'];
   const nbaArticles = snapshot.health?.['NBA.com articles'];
   const nbaNewsHealthy = !!(nbaNews?.okAt && !nbaNews.error && Date.now() - nbaNews.okAt < 150_000);
+  // Hosted collectors attach evaluated alarms (repeated failures, staleness).
+  // Browser fallback snapshots omit the field; unknown means "no alarm data".
+  const alarms = Array.isArray(snapshot.alarms) ? snapshot.alarms.filter(a => a?.severity === 'critical') : [];
   const failed = !recent(scoreboard) || (live && (!recent(injuries) || !recent(pbp))) ||
-    (hosted && !!storage?.error) || (hosted && live && (!nbaNewsHealthy || !!nbaArticles?.error));
+    (hosted && !!storage?.error) || (hosted && live && (!nbaNewsHealthy || !!nbaArticles?.error)) ||
+    alarms.length > 0;
   const issues = [];
   if (!recent(scoreboard)) issues.push(`Scoreboard: ${scoreboard?.error || 'not yet verified'}`);
   if (live && !recent(injuries)) issues.push(`Injuries: ${injuries?.error || 'not yet verified'}`);
   if (live && !recent(pbp)) issues.push(`Play-by-play: ${pbp?.error || 'not yet verified'}`);
+  for (const alarm of alarms.slice(0, 3)) issues.push(`Alarm: ${alarm.name} — ${alarm.reason}`);
   if (hosted && storage?.error) issues.push(`Event storage: ${storage.error}`);
   if (hosted && live && !nbaNewsHealthy) issues.push(`NBA.com news: ${nbaNews?.error || 'not yet verified'}`);
   if (hosted && live && nbaArticles?.error) issues.push(`NBA.com article: ${nbaArticles.error}`);

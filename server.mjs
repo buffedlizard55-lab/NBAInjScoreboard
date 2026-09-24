@@ -1,14 +1,29 @@
 import http from 'node:http';
-import { readFile, appendFile, mkdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve, extname, dirname } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Collector, loadSaved } from './src/collector.mjs';
 import { easternDate, validDate } from './src/engine.mjs';
+import { loadRegistry } from './src/approved-sources.mjs';
+import { str, validateReport } from './src/editorial.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const statePath = resolve(process.env.NBA_STATE_FILE || `${root}/.runtime/state.json`);
 const collector = new Collector({ statePath, saved: await loadSaved(statePath) });
+// Approved team/reporter/social registry. Empty by default: no automatic
+// collection of those channels is active (see config/approved-sources.json).
+// A broken registry must not take down the collector; it only narrows intake.
+const registryPath = resolve(process.env.NBA_SOURCES_FILE || `${root}/config/approved-sources.json`);
+let registry = { version: 1, updatedAt: '', sources: [] };
+try {
+  registry = await loadRegistry(registryPath);
+  collector.engine.source('Approved source registry');
+} catch (error) {
+  const detail = String(error?.message || error).slice(0, 200);
+  collector.engine.source('Approved source registry', detail);
+  console.error(`Approved source registry unavailable (${registryPath}): ${detail}`);
+}
 const port = Number(process.env.PORT) || 3000;
 const clients = new Set();
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
@@ -24,34 +39,6 @@ function tokenMatches(auth) {
   const expected = Buffer.from(token);
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
-function approvedUrl(raw) {
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
-    const host = url.hostname.toLowerCase();
-    const approved = ['nba.com', 'espn.com', 'apnews.com'];
-    const custom = (process.env.TRUSTED_SOURCE_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (approved.some(h => host === h || host.endsWith(`.${h}`)) || custom.includes(host)) return true;
-    if (!['x.com', 'twitter.com'].includes(host)) return false;
-    const handles = (process.env.TRUSTED_SOCIAL_HANDLES || '').split(',').map(s => s.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
-    const [handle, action, postId] = url.pathname.split('/').filter(Boolean);
-    return handles.includes(str(handle).toLowerCase()) && action === 'status' && /^\d{8,25}$/.test(str(postId));
-  } catch { return false; }
-}
-const str = value => value == null ? '' : String(value);
-function exactZonedTimestamp(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
-  if (!match) return NaN;
-  const [year, month, day, hour, minute, second = '0', fraction = ''] = match.slice(1);
-  // Date.parse normalizes impossible dates (for example Feb 30), so validate the
-  // source's calendar fields before accepting its claimed publication instant.
-  const calendar = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(`${fraction}000`.slice(1, 4))));
-  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 ||
-    calendar.getUTCDate() !== Number(day) || calendar.getUTCHours() !== Number(hour) ||
-    calendar.getUTCMinutes() !== Number(minute) || calendar.getUTCSeconds() !== Number(second)) return NaN;
-  return Date.parse(value);
-}
-
 async function receiveJson(req) {
   let text = '';
   for await (const chunk of req) {
@@ -60,35 +47,69 @@ async function receiveJson(req) {
   }
   return JSON.parse(text);
 }
+// Durable audit line for an authenticated operator action. Returns a warning
+// string when the append fails so the operator knows the trail is degraded.
+// Unauthenticated requests are never logged per-request (disk-fill from scans).
+async function audit(entry) {
+  const result = await collector.store.appendAudit(entry);
+  if (result.ok) {
+    collector.engine.source('Local audit storage');
+    collector.metrics.record('Local audit storage', true);
+    return '';
+  }
+  collector.engine.source('Local audit storage', result.error);
+  collector.metrics.record('Local audit storage', false, { error: result.error });
+  console.error(`Audit log write failed: ${result.error}`);
+  return 'Audit log write failed; check server storage';
+}
+const auditField = value => str(value).slice(0, 300);
 async function report(req, res) {
   if (!process.env.INJURY_INGEST_TOKEN) return sendJson(res, 503, { error: 'Editorial intake is not configured' });
   if (!tokenMatches(str(req.headers.authorization))) return sendJson(res, 401, { error: 'Unauthorized' });
   try {
     const body = await receiveJson(req);
+    // Shared validation (src/editorial.mjs): shape, URL and timestamp. The
+    // engine still enforces live-game, participation and duplicate gates.
+    const check = validateReport(body, { registry,
+      trustedHosts: process.env.TRUSTED_SOURCE_HOSTS, trustedHandles: process.env.TRUSTED_SOCIAL_HANDLES });
+    if (!check.ok) {
+      await audit({ action: 'report.rejected', reason: check.error,
+        gameId: auditField(body.gameId), athleteId: auditField(body.athleteId), status: auditField(body.status),
+        sourceUrl: auditField(body.sourceUrl), sourceId: check.sourceId });
+      return sendJson(res, 422, { error: check.error });
+    }
     const text = str(body.text).trim();
     const name = str(body.source).trim();
-    const publishedValue = str(body.publishedAt);
-    // Editorial reports need a source-provided instant, not an ambiguous local
-    // date/time that could be attributed to the wrong game around midnight.
-    const publishedAt = exactZonedTimestamp(publishedValue);
-    if (!approvedUrl(body.sourceUrl) || text.length < 20 || text.length > 700 || name.length < 3 || name.length > 80 ||
-      !Number.isFinite(publishedAt) || !/^[1-9]\d{0,11}$/.test(str(body.athleteId)) ||
-      !/^\d{6,12}$/.test(str(body.gameId))) return sendJson(res, 422, { error: 'Invalid source, player, game, timestamp or evidence' });
     const changed = collector.engine.curated({ gameId: str(body.gameId), athleteId: str(body.athleteId),
       status: body.status, name: '', teamId: '', text, source: `Curated · ${name}`,
-      sourceUrl: body.sourceUrl, publishedAt });
-    if (!changed) return sendJson(res, 422, { error: 'No matching live game and confirmed participating player, or duplicate report' });
-    // Audit metadata, not auth; do not expose the audit log from the static server.
-    const log = resolve(dirname(statePath), 'editorial.jsonl');
-    let auditWarning = '';
-    try {
-      await mkdir(dirname(log), { recursive: true });
-      await appendFile(log, `${JSON.stringify({ at: new Date().toISOString(), gameId: body.gameId, athleteId: body.athleteId, status: body.status, sourceUrl: body.sourceUrl })}\n`);
-    } catch (error) { auditWarning = 'Audit log write failed; check server storage'; console.error(auditWarning, error); }
+      sourceUrl: body.sourceUrl, publishedAt: check.publishedAt });
+    if (!changed) {
+      await audit({ action: 'report.rejected', reason: 'No matching live game and confirmed participating player, or duplicate report',
+        gameId: auditField(body.gameId), athleteId: auditField(body.athleteId), status: auditField(body.status),
+        sourceUrl: auditField(body.sourceUrl), sourceId: check.sourceId });
+      return sendJson(res, 422, { error: 'No matching live game and confirmed participating player, or duplicate report' });
+    }
+    const auditWarning = await audit({ action: 'report.accepted', gameId: auditField(body.gameId),
+      athleteId: auditField(body.athleteId), status: auditField(body.status),
+      sourceUrl: auditField(body.sourceUrl), sourceId: check.sourceId });
     collector.publish(true);
     await collector.writeQueue;
     sendJson(res, 201, { accepted: true, ...((auditWarning || collector.persistenceError) ? { warning: [auditWarning, collector.persistenceError].filter(Boolean).join('; ') } : {}) });
   } catch (error) { sendJson(res, 400, { error: String(error.message).slice(0, 120) }); }
+}
+function activeGames(now = Date.now()) {
+  return [...collector.engine.games.values()].filter(g => g.phase === 'in' && now - g.lastScoreboardAt < 90_000).length;
+}
+async function operatorLog(req, res, kind) {
+  // Authenticated operator reads. The audit trail contains source URLs and
+  // operator actions: never expose it without the ingest token.
+  if (!process.env.INJURY_INGEST_TOKEN) return sendJson(res, 503, { error: 'Editorial intake is not configured' });
+  if (!tokenMatches(str(req.headers.authorization))) return sendJson(res, 401, { error: 'Unauthorized' });
+  try {
+    const url = new URL(req.url, 'http://localhost');
+    const entries = await collector.store.readRecent(kind, url.searchParams.get('limit'));
+    return sendJson(res, 200, { kind, entries });
+  } catch (error) { return sendJson(res, 500, { error: String(error?.message || error).slice(0, 120) }); }
 }
 
 collector.on('update', changes => {
@@ -108,11 +129,29 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://a.espncdn.com; connect-src 'self' https://site.web.api.espn.com https://cdn.nba.com; object-src 'none'; base-uri 'self'; form-action 'self'");
-  if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { service: 'NBA injury collector', day: easternDate(), sources: collector.engine.health, activeGames: [...collector.engine.games.values()].filter(g => g.phase === 'in' && Date.now() - g.lastScoreboardAt < 90_000).length });
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    const now = Date.now();
+    return sendJson(res, 200, { service: 'NBA injury collector', day: easternDate(),
+      startedAt: collector.startedAt, uptimeMs: Math.max(0, now - collector.startedAt),
+      live: collector.live, activeGames: activeGames(now),
+      sources: collector.engine.health, metrics: collector.metrics.snapshot(), alarms: collector.alarms() });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/metrics') {
+    const now = Date.now();
+    return sendJson(res, 200, { startedAt: collector.startedAt, uptimeMs: Math.max(0, now - collector.startedAt),
+      live: collector.live, activeGames: activeGames(now),
+      metrics: collector.metrics.snapshot(), alarms: collector.alarms() });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/sources') return sendJson(res, 200, { registry });
+  if (req.method === 'GET' && url.pathname === '/api/audit') return operatorLog(req, res, 'audit');
+  if (req.method === 'GET' && url.pathname === '/api/events') return operatorLog(req, res, 'events');
   if (req.method === 'GET' && url.pathname === '/api/state') {
     const day = url.searchParams.get('date') || easternDate();
     if (!validDate(day)) return sendJson(res, 400, { error: 'Invalid date' });
-    return sendJson(res, 200, collector.engine.snapshot(day));
+    // Collector-evaluated alarms ride along so the UI can surface repeated
+    // source failures, not just the latest error string. Browser fallback
+    // snapshots omit this field and the UI treats it as unknown.
+    return sendJson(res, 200, { ...collector.engine.snapshot(day), alarms: collector.alarms() });
   }
   if (req.method === 'GET' && url.pathname === '/api/stream') {
     if (clients.size >= 200) return sendJson(res, 503, { error: 'Too many stream clients; use /api/state polling' });

@@ -4,6 +4,8 @@ import { dirname } from 'node:path';
 import { Engine, easternDate, dateOffset, parseEspnInjuries, parseEspnNews, parseAthleteNews } from './engine.mjs';
 import { SourceClient, urls } from './sources.mjs';
 import { nbaNewsLinks, nbaArticle } from './nba-news.mjs';
+import { SourceMetrics, evaluateAlarms } from './observability.mjs';
+import { EventStore } from './event-store.mjs';
 
 // A report filed just after the final buzzer still describes this game, so keep
 // polling briefly once it ends (engine.gameAcceptsReports enforces the timestamp).
@@ -27,6 +29,9 @@ export class Collector extends EventEmitter {
     this.now = now;
     this.client = client;
     this.statePath = statePath;
+    this.startedAt = now();
+    this.metrics = new SourceMetrics({ now });
+    this.store = new EventStore({ dir: dirname(statePath), now });
     this.engine = new Engine({ now, saved });
     this.timers = new Set();
     this.running = false;
@@ -48,13 +53,19 @@ export class Collector extends EventEmitter {
     this.articleChecked = new Map();
   }
   get live() { return [...this.engine.games.values()].some(g => validGame(g, this.now())); }
+  alarms() {
+    return evaluateAlarms({ health: this.engine.health, metrics: this.metrics.snapshot(), now: this.now(), live: this.live });
+  }
   async attempt(name, url, consume) {
     try {
       const data = await this.client.json(url, url); // per-URL backoff: yesterday cannot suppress today
       consume(data);
+      this.metrics.record(name, true);
       return true;
     } catch (error) {
-      this.engine.source(name, message(error));
+      const detail = message(error);
+      this.engine.source(name, detail);
+      this.metrics.record(name, false, { error: detail });
       return false;
     }
   }
@@ -182,6 +193,7 @@ export class Collector extends EventEmitter {
       const index = await this.client.text(urls.nbaNews, urls.nbaNews);
       const articles = nbaNewsLinks(index, names);
       this.engine.source('NBA.com news index');
+      this.metrics.record('NBA.com news index', true);
       let articleFailure = '';
       let checked = 0;
       for (const article of articles) {
@@ -199,15 +211,48 @@ export class Collector extends EventEmitter {
         } catch (error) { articleFailure = message(error); }
       }
       if (articleFailure || checked) this.engine.source('NBA.com articles', articleFailure || null);
+      // Record article-fetch health only when article I/O actually happened.
+      if (articleFailure) this.metrics.record('NBA.com articles', false, { error: articleFailure });
+      else if (checked) this.metrics.record('NBA.com articles', true);
       // Keep delayed box-score replays bounded, and allow old article links to be checked again.
       this.lastNbaCandidates = new Map([...this.lastNbaCandidates].slice(-200));
       this.articleChecked = new Map([...this.articleChecked].filter(([, t]) => this.now() - t < 24 * 3_600_000));
-    } catch (error) { this.engine.source('NBA.com news index', message(error)); }
+    } catch (error) {
+      const detail = message(error);
+      this.engine.source('NBA.com news index', detail);
+      this.metrics.record('NBA.com news index', false, { error: detail });
+    }
     this.publish();
   }
   publish(force = false) {
     const changes = this.engine.drainChanges();
     this.emit('update', changes);
+    // Serialize event lines synchronously: update/review objects keep mutating
+    // as later evidence arrives, and each line must describe this transition.
+    // Event appends are NOT throttled with the state snapshot; every published
+    // change gets a durable line even inside the 5s snapshot window.
+    const eventLines = changes.map(change => {
+      try {
+        return JSON.stringify({ at: new Date(this.now()).toISOString(), ...change });
+      } catch {
+        return JSON.stringify({ at: new Date(this.now()).toISOString(), id: change?.id, kind: change?.kind, gameId: change?.gameId });
+      }
+    });
+    if (eventLines.length) {
+      this.writeQueue = this.writeQueue.then(async () => {
+        for (const line of eventLines) {
+          const result = await this.store.appendEvent(line);
+          if (!result.ok) throw new Error(result.error);
+        }
+        this.engine.source('Local event storage');
+        this.metrics.record('Local event storage', true);
+      }).catch(error => {
+        this.persistenceError = message(error);
+        this.engine.source('Local event storage', this.persistenceError);
+        this.metrics.record('Local event storage', false, { error: this.persistenceError });
+        console.error(`Cannot persist state: ${this.persistenceError}`);
+      });
+    }
     if (force || this.now() - this.lastWrite > 5000) {
       this.lastWrite = this.now();
       const json = JSON.stringify({ ...this.engine.export(), pendingCandidates: [...this.pendingCandidates.values()] });
@@ -217,9 +262,11 @@ export class Collector extends EventEmitter {
         await rename(`${this.statePath}.tmp`, this.statePath);
         this.persistenceError = '';
         this.engine.source('Local event storage');
+        this.metrics.record('Local event storage', true);
       }).catch(error => {
         this.persistenceError = message(error);
         this.engine.source('Local event storage', this.persistenceError);
+        this.metrics.record('Local event storage', false, { error: this.persistenceError });
         console.error(`Cannot persist state: ${this.persistenceError}`);
       });
     }

@@ -32,7 +32,8 @@ test('source cooldown is per URL, honors HTTP failures and recovers', async () =
   assert.equal(calls, 4);
 });
 test('today loads even when yesterday fails; delayed summary proof replays earlier report; persisted evidence survives restart', async () => {
-  const path = join(tmpdir(), `nba-test-${randomUUID()}.json`);
+  const dir = join(tmpdir(), `nba-test-${randomUUID()}`);
+  const path = join(dir, 'state.json');
   const engineTime = () => NOW;
   const client = { json: async (_key, url) => {
     if (url === urls.scoreboard('2026-10-02')) throw new Error('Test: yesterday unavailable');
@@ -62,10 +63,11 @@ test('today loads even when yesterday fails; delayed summary proof replays earli
     await second.injuryTick();
     assert.equal(second.engine.snapshot('2026-10-03').injuries.length, 2);
     await second.stop();
-  } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 test('pending unmatched source evidence persists across a collector restart', async () => {
-  const path = join(tmpdir(), `nba-pending-${randomUUID()}.json`);
+  const dir = join(tmpdir(), `nba-pending-${randomUUID()}`);
+  const path = join(dir, 'state.json');
   const candidate = { sourceKey: 'pending-story', publishedAt: NOW, athleteId: '1234567', name: 'Test Player',
     status: 'reported', text: 'Test Player exited with a left ankle sprain.', source: 'Test source', sourceUrl: 'https://www.espn.com/nba/story/_/id/1/test' };
   try {
@@ -77,7 +79,7 @@ test('pending unmatched source evidence persists across a collector restart', as
     const restarted = new Collector({ now: () => NOW, statePath: path, saved, client: { json: async () => ({}) } });
     assert.equal(restarted.pendingCandidates.get(candidate.sourceKey).candidate.text, candidate.text);
     await restarted.stop();
-  } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('scoreboard outage preserves current games but suspends new alerts when its live state becomes stale', () => {
@@ -118,7 +120,8 @@ test('multi-athlete news, non-medical rest and stale status do not create extra 
 });
 
 test('collector pipeline: a real-shaped ESPN injury row becomes an alert in both feeds', async () => {
-  const path = join(tmpdir(), `nba-real-${randomUUID()}.json`);
+  const dir = join(tmpdir(), `nba-real-${randomUUID()}`);
+  const path = join(dir, 'state.json');
   // Put a real captured athlete (Cade Cunningham, id 4432166) on the home team of the fixture game.
   const home = { team: { id: '2' }, statistics: realBox.statistics };
   const boxData = { header: { id: GAME_ID }, boxscore: { players: [...summary().boxscore.players, home] }, plays: summary().plays };
@@ -155,11 +158,12 @@ test('collector pipeline: a real-shaped ESPN injury row becomes an alert in both
     assert.equal(state.feed.filter(e => e.kind === 'injury').length, 1);
     assert.equal(collector.engine.snapshot('2026-10-03').reviews.length, 0, 'replay reviews stay a separate system');
     await collector.stop();
-  } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('per-athlete news poll finds an injury the league-wide feed never carried', async () => {
-  const path = join(tmpdir(), `nba-athlete-${randomUUID()}.json`);
+  const dir = join(tmpdir(), `nba-athlete-${randomUUID()}`);
+  const path = join(dir, 'state.json');
   let athleteCalls = [];
   const story = { articles: [{ id: 22220000, published: '2026-10-03T23:20:00Z', byline: 'Example beat writer',
     headline: 'Test Player exits with left ankle sprain', description: 'Test Player left the game with a left ankle sprain.',
@@ -192,11 +196,12 @@ test('per-athlete news poll finds an injury the league-wide feed never carried',
     await collector.athleteNewsTick();
     assert.equal(collector.engine.snapshot('2026-10-03').injuries.length, 1);
     await collector.stop();
-  } finally { await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('ESPN_ATHLETE_NEWS=0 disables the extra polling and keeps the primary sources', async () => {
-  const path = join(tmpdir(), `nba-off-${randomUUID()}.json`);
+  const dir = join(tmpdir(), `nba-off-${randomUUID()}`);
+  const path = join(dir, 'state.json');
   let athleteCalls = 0;
   const client = { json: async (_key, url) => {
     if (url === urls.scoreboard('2026-10-02')) throw new Error('Test: yesterday unavailable');
@@ -218,5 +223,5 @@ test('ESPN_ATHLETE_NEWS=0 disables the extra polling and keeps the primary sourc
     assert.equal(athleteCalls, 0);
     assert.equal(collector.engine.snapshot('2026-10-03').injuries.length, 1, 'the structured feed still works');
     await collector.stop();
-  } finally { delete process.env.ESPN_ATHLETE_NEWS; await rm(path, { force: true }); await rm(`${path}.tmp`, { force: true }); }
+  } finally { delete process.env.ESPN_ATHLETE_NEWS; await rm(dir, { recursive: true, force: true }); }
 });
