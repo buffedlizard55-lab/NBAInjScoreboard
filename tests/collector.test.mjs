@@ -23,7 +23,8 @@ test('source cooldown is per URL, honors HTTP failures and recovers', async () =
   assert.equal(calls, 2);
   time += 21_000;
   assert.deepEqual(await client.json('a', 'https://example.com/bad'), { events: [] });
-  assert.equal(calls, 3);
+  assert.equal(await client.text('html', 'https://example.com/news'), '{"events":[]}');
+  assert.equal(calls, 4);
 });
 test('today loads even when yesterday fails; delayed summary proof replays earlier report; persisted evidence survives restart', async () => {
   const path = join(tmpdir(), `nba-test-${randomUUID()}.json`);

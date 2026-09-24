@@ -6,7 +6,8 @@ export const urls = {
   injuries: `${ESPN}/injuries`,
   news: `${ESPN}/news?limit=50`,
   nbaScoreboard: `${NBA}/scoreboard/todaysScoreboard_00.json`,
-  nbaPbp: id => `${NBA}/playbyplay/playbyplay_${id}.json`
+  nbaPbp: id => `${NBA}/playbyplay/playbyplay_${id}.json`,
+  nbaNews: 'https://www.nba.com/news'
 };
 
 export class SourceClient {
@@ -16,13 +17,15 @@ export class SourceClient {
     this.timeout = timeout;
     this.cooldown = new Map();
   }
-  async json(key, url) {
+  json(key, url) { return this.request(key, url, 'json'); }
+  text(key, url) { return this.request(key, url, 'text'); }
+  async request(key, url, format) {
     if (this.now() < (this.cooldown.get(key)?.until || 0)) throw new Error(`Cooling down after source failure (${key})`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
     try {
       // No invented Referer/Origin, no embedded secrets, no public open-proxy URLs.
-      const response = await this.fetcher(url, { signal: controller.signal, cache: 'no-store', headers: { Accept: 'application/json' } });
+      const response = await this.fetcher(url, { signal: controller.signal, cache: 'no-store', headers: { Accept: format === 'text' ? 'text/html' : 'application/json' } });
       if (!response.ok) {
         const retry = Math.min(300, Math.max(15, Number(response.headers?.get('retry-after')) || 0));
         const error = new Error(`HTTP ${response.status} (${key})`);
@@ -33,7 +36,7 @@ export class SourceClient {
       if (length > 8_000_000) throw new Error(`Oversize source (${key})`);
       const text = await response.text();
       if (text.length > 8_000_000) throw new Error(`Oversize source (${key})`);
-      const data = JSON.parse(text);
+      const data = format === 'text' ? text : JSON.parse(text);
       this.cooldown.delete(key);
       return data;
     } catch (error) {
