@@ -1,0 +1,21 @@
+{"header":"NBA News","articles":[
+{"id":50020500,"nowId":"1-50020500","contentKey":"50020500-1-293-1","dataSourceIdentifier":"ec6d814223a99","type":"Media",
+ "headline":"Why Stephen A. is worried about KAT, Knicks extension talks",
+ "description":"Why Stephen A. is worried about KAT, Knicks extension talks",
+ "lastModified":"2026-09-24T14:58:10Z","published":"2026-09-24T14:58:10Z",
+ "categories":[
+  {"id":9577,"type":"league","uid":"s:40~l:46","description":"NBA","sportId":46,"leagueId":46},
+  {"id":140945,"type":"athlete","uid":"s:40~l:46~a:3136195","description":"Karl-Anthony Towns","sportId":46,"athleteId":3136195,
+   "athlete":{"id":3136195,"description":"Karl-Anthony Towns","links":{"web":{"athletes":{"href":"https://www.espn.com/nba/player/_/id/3136195/karl-anthony-towns"}}}}},
+  {"id":4293,"type":"team","uid":"s:40~l:46~t:18","description":"New York Knicks","sportId":46,"teamId":18}],
+ "links":{"web":{"href":"https://www.espn.com/video/clip/_/id/50020500/why-stephen-worried-kat-knicks-extension-talks"}},"premium":false},
+{"id":50015657,"nowId":"1-50015657","contentKey":"50015657-1-6-1","dataSourceIdentifier":"54f303026061a","type":"Story",
+ "headline":"Reranking the men's basketball recruiting class of 2024",
+ "description":"Cooper Flagg remains No. 1 in this high school class -- but we admit to some mistakes for the rest of the list.",
+ "lastModified":"2026-09-24T11:35:40Z","published":"2026-09-24T11:35:40Z",
+ "categories":[
+  {"id":9577,"type":"league","uid":"s:40~l:46","description":"NBA","sportId":46,"leagueId":46},
+  {"id":686869,"type":"athlete","uid":"s:40~l:46~a:5041939","description":"Cooper Flagg","sportId":46,"athleteId":5041939},
+  {"id":688554,"type":"athlete","uid":"s:40~l:46~a:5037871","description":"Dylan Harper","sportId":46,"athleteId":5037871}],
+ "links":{"web":{"href":"https://www.espn.com/nba/story/_/id/50015657/reranking-mens-basketball-recruiting-class-2024"}},"premium":false}
+]}

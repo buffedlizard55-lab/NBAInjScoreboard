@@ -1,11 +1,16 @@
 import { EventEmitter } from 'node:events';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { Engine, easternDate, dateOffset, parseEspnInjuries, parseEspnNews } from './engine.mjs';
+import { Engine, easternDate, dateOffset, parseEspnInjuries, parseEspnNews, parseAthleteNews } from './engine.mjs';
 import { SourceClient, urls } from './sources.mjs';
 import { nbaNewsLinks, nbaArticle } from './nba-news.mjs';
 
-const validGame = (game, now) => game.phase === 'in' && Number.isFinite(game.lastScoreboardAt) && now - game.lastScoreboardAt < 90_000;
+// A report filed just after the final buzzer still describes this game, so keep
+// polling briefly once it ends (engine.gameAcceptsReports enforces the timestamp).
+const inPostGrace = (game, now) => game.phase === 'post' && Number.isFinite(game.lastPlayAt) &&
+  game.lastPlayAt > 0 && now - game.lastPlayAt < 15 * 60_000;
+const validGame = (game, now) => (game.phase === 'in' || inPostGrace(game, now)) &&
+  Number.isFinite(game.lastScoreboardAt) && now - game.lastScoreboardAt < 90_000;
 const message = error => error?.name === 'AbortError' ? 'Timed out' : String(error?.message || error).slice(0, 130);
 
 export async function loadSaved(path) {
@@ -31,6 +36,9 @@ export class Collector extends EventEmitter {
     this.lastInjuries = null;
     this.lastNews = null;
     this.lastNbaCandidates = new Map();
+    this.lastAthleteNews = new Map();
+    this.athleteCursor = 0;
+    this.athletePolled = new Set();
     this.articleChecked = new Map();
   }
   get live() { return [...this.engine.games.values()].some(g => validGame(g, this.now())); }
@@ -59,7 +67,7 @@ export class Collector extends EventEmitter {
     const now = this.now();
     const games = [...this.engine.games.values()].filter(g => validGame(g, now) ||
       (g.phase === 'pre' && g.start - now < 10 * 60_000 && g.start - now > -90_000) ||
-      (g.phase === 'post' && now - g.start < 5 * 3_600_000 && !g.lastSummary));
+      (g.phase === 'post' && now - g.start < 5 * 3_600_000 && !g.lastSummary) || inPostGrace(g, now));
     let index = 0;
     const worker = async () => {
       while (index < games.length) {
@@ -71,6 +79,7 @@ export class Collector extends EventEmitter {
           // An injury may be published before ESPN's box score shows first minutes.
           if (this.lastInjuries) for (const item of parseEspnInjuries(this.lastInjuries)) this.engine.accept(item);
           if (this.lastNews) for (const item of parseEspnNews(this.lastNews)) this.engine.accept(item);
+          for (const items of this.lastAthleteNews.values()) for (const item of items) this.engine.accept(item);
           for (const item of this.lastNbaCandidates.values()) this.engine.accept(item);
         });
         if (game.officialId) await this.attempt('NBA official play-by-play', urls.nbaPbp(game.officialId), data => this.engine.nbaPbp(game.id, data));
@@ -85,6 +94,39 @@ export class Collector extends EventEmitter {
   }
   async newsTick() {
     if (this.live) await this.attempt('ESPN news', urls.news, data => { this.lastNews = data; this.engine.newsFeed(data); });
+    this.publish();
+  }
+  /**
+   * The league-wide news feed only carries the newest ~50 stories, so an injury to
+   * a role player can fall off it before we ever see it. Poll each participating
+   * player's own news feed in a bounded round-robin. Set ESPN_ATHLETE_NEWS=0 to
+   * disable; respect provider rate limits before raising the batch size.
+   */
+  async athleteNewsTick() {
+    if (!this.live || process.env.ESPN_ATHLETE_NEWS === '0') return this.publish();
+    const participants = [...this.engine.games.values()].filter(g => validGame(g, this.now()))
+      .flatMap(g => Object.values(g.participants).map(p => ({ ...p, gameId: g.id })));
+    if (!participants.length) return this.publish();
+    const names = [...new Set(participants.map(p => p.name))];
+    const batch = Math.max(1, Math.min(12, Number(process.env.ESPN_ATHLETE_NEWS_BATCH) || 8));
+    let checked = 0;
+    for (let step = 0; step < participants.length && checked < batch; step++) {
+      const player = participants[this.athleteCursor % participants.length];
+      this.athleteCursor = (this.athleteCursor + 1) % participants.length;
+      if (!player?.id) continue;
+      const ok = await this.attempt('ESPN player news', urls.athleteNews(player.id), data => {
+        const items = parseAthleteNews(data, player.id, { name: player.name, others: names.filter(n => n !== player.name) });
+        this.lastAthleteNews.set(player.id, items);
+        for (const item of items) this.engine.accept(item);
+      });
+      if (ok) { checked++; this.athletePolled.add(player.id); }
+    }
+    // Publish real coverage so nobody mistakes a partial sweep for full monitoring.
+    this.athletePolled = new Set([...this.athletePolled].filter(id => participants.some(p => p.id === id)));
+    this.engine.source('ESPN player news', null,
+      { polledDistinct: this.athletePolled.size, participants: participants.length });
+    // Bound the delayed-replay cache the same way NBA.com candidates are bounded.
+    this.lastAthleteNews = new Map([...this.lastAthleteNews].slice(-250));
     this.publish();
   }
   async nbaNewsTick() {
@@ -157,6 +199,8 @@ export class Collector extends EventEmitter {
     // cannot wait up to a minute for the first injury check after tip-off.
     this.runLoop(this.injuryTick, () => this.live ? 12_000 : 8_000);
     this.runLoop(this.newsTick, () => this.live ? 30_000 : 12_000);
+    // Idle iterations return immediately without network I/O.
+    this.runLoop(this.athleteNewsTick, () => this.live ? 30_000 : 15_000);
     // NBA.com has server-readable, dated articles but no CORS on its HTML pages.
     this.runLoop(this.nbaNewsTick, () => this.live ? 45_000 : 12_000);
   }

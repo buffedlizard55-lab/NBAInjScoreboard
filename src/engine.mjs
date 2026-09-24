@@ -11,11 +11,44 @@ const compact = value => str(value).replace(/\s+/g, ' ').trim();
 // ESPN legacy athlete IDs can be short (an archived box score includes 6440).
 // Game/event IDs have a different format; do not apply their length gate to players.
 const athleteId = value => /^[1-9]\d{0,11}$/.test(str(value)) ? str(value) : '';
+export { athleteId };
 const gameId = value => /^\d{6,12}$/.test(str(value)) ? str(value) : '';
+
+/**
+ * The ESPN /injuries feed does NOT put an `id` on `athlete` (verified 2026-09-24
+ * against the live endpoint: rows carry firstName/lastName/displayName/shortName/
+ * links/headshot/position/team, and no id). The same athlete's id does appear in
+ * the player-card link, the sportscenter uid, the headshot filename and the
+ * injury note's core-API $ref. Recover it from those, and fail closed if the
+ * recovered ids disagree rather than guessing a player.
+ */
+export function espnAthleteId(athlete, row = null) {
+  const found = [];
+  const push = value => { const id = athleteId(value); if (id) found.push(id); };
+  push(athlete?.id);
+  const uid = /~a:(\d+)/.exec(str(athlete?.uid));
+  if (uid) push(uid[1]);
+  for (const link of asArray(athlete?.links)) {
+    const href = str(link?.href);
+    const card = /\/nba\/player\/_\/id\/(\d+)(?:[/?]|$)/.exec(href);
+    if (card) push(card[1]);
+    const callback = /~a:(\d+)/.exec(href);
+    if (callback) push(callback[1]);
+  }
+  const headshot = /\/full\/(\d+)\.png/i.exec(str(athlete?.headshot?.href));
+  if (headshot) push(headshot[1]);
+  for (const note of asArray(athlete?.notes?.items || row?.athlete?.notes?.items)) {
+    const ref = /\/athletes\/(\d+)\//.exec(str(note?.injury?.['$ref']));
+    if (ref) push(ref[1]);
+  }
+  const unique = [...new Set(found)];
+  return unique.length === 1 ? unique[0] : '';
+}
 export const plainName = value => compact(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/['’]s\b/gi, '').replace(/[^a-z0-9 ]/gi, '').toLowerCase();
 const gameUrl = id => `https://www.espn.com/nba/game/_/gameId/${id}`;
 const injuryListUrl = 'https://www.espn.com/nba/injuries';
-export const hasMedicalDetail = value => /\b(injur\w*|illness|concussion|protocol|pain|sore\w*|strain|sprain|bruise|contusion|fracture|tear|torn|swelling|tightness|surgery|ankle|knee|foot|hamstring|calf|hip|groin|back|shoulder|wrist|hand|elbow|neck|quad|achilles|head|finger|thumb|toe|rib|abdominal|oblique|migrain\w*|cramp\w*|dizz\w*|limp\w*)\b/i.test(str(value));
+// Inflected forms matter: ESPN writes "fractured left foot", not "fracture".
+export const hasMedicalDetail = value => /\b(injur\w*|illness|concuss\w*|protocol|pain\w*|sore\w*|strain\w*|sprain\w*|bruise\w*|bruising|contusion\w*|fracture\w*|tear|torn|swell\w*|tightness|surgery|surgical|operation|ankle\w*|knee\w*|foot|feet|hamstring\w*|calf|calves|hip|hips|groin|back|shoulder\w*|wrist\w*|hand|hands|elbow\w*|neck|quad\w*|achilles|head|finger\w*|thumb\w*|toe|toes|rib|ribs|abdominal|abdomen|oblique\w*|migrain\w*|cramp\w*|dizz\w*|limp\w*|acl|mcl|lcl|meniscus|labrum|tendon\w*|ligament\w*|muscle\w*|virus|flu|stomach|plantar|fasciitis|heel|eye|jaw|non-contact)\b/i.test(str(value));
 const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for|out|questionable|doubtful|play|playing|next) (?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?(?: game)?)\b/i.test(str(value)) && !/\b(to return|remainder|tonight|this game)\b/i.test(str(value));
 
 export function easternDate(now = new Date()) {
@@ -55,12 +88,22 @@ function playedMinutes(raw) {
   return /^\d+(?::\d{1,2})?$/.test(text) && (Number(text.split(':')[0]) > 0 || Number(text.split(':')[1] || 0) > 0);
 }
 
+// ESPN rounds a sub-minute appearance down to "0", while a true DNP arrives with
+// didNotPlay:true and an empty stats array (verified against a real box score).
+// So a populated stats line is itself recorded participation, not just minutes.
+function recordedAppearance(row, minuteIndex) {
+  if (row?.didNotPlay !== false) return false;
+  const stats = asArray(row?.stats);
+  return (minuteIndex >= 0 && playedMinutes(stats[minuteIndex])) || stats.some(value => compact(value).length > 0);
+}
+
 function addParticipant(game, athlete, teamId, proof) {
-  const id = athleteId(athlete?.id);
+  const id = espnAthleteId(athlete); // resilient if the box score ever omits athlete.id too
   if (!id || ![game.home.id, game.away.id].includes(str(teamId)) || !compact(athlete.displayName)) return;
+  const rank = { 'ESPN box score: minutes played': 3, 'ESPN play-by-play: recorded action': 2, 'ESPN box score: recorded stats line': 1 };
   const existing = game.participants[id];
   game.participants[id] = { id, name: compact(athlete.displayName), teamId: str(teamId),
-    proof: existing?.proof === 'ESPN box score: minutes played' ? existing.proof : proof };
+    proof: existing && (rank[existing.proof] || 0) >= (rank[proof] || 0) ? existing.proof : proof };
 }
 
 function espnPlays(game, data) {
@@ -71,11 +114,13 @@ function espnPlays(game, data) {
     for (const set of asArray(group.statistics)) {
       const minuteIndex = asArray(set.keys).indexOf('minutes');
       for (const row of asArray(set.athletes)) {
-        const id = athleteId(row.athlete?.id);
+        const id = espnAthleteId(row.athlete, row);
         if (id) roster.set(id, { athlete: row.athlete, teamId });
-        if (row.didNotPlay === false && minuteIndex >= 0 && playedMinutes(row.stats?.[minuteIndex])) {
-          addParticipant(game, row.athlete, teamId, 'ESPN box score: minutes played');
-        }
+        if (!recordedAppearance(row, minuteIndex)) continue;
+        // Keep the proof string honest about what the box score actually showed.
+        const proof = minuteIndex >= 0 && playedMinutes(row.stats?.[minuteIndex])
+          ? 'ESPN box score: minutes played' : 'ESPN box score: recorded stats line';
+        addParticipant(game, row.athlete, teamId, proof);
       }
     }
   }
@@ -85,11 +130,16 @@ function espnPlays(game, data) {
     dateMs(play.wallclock) >= game.start - 10 * 60_000 && dateMs(play.wallclock) < game.start + 2 * 3_600_000);
   if (opening) game.liveStartedAt = dateMs(opening.wallclock);
   for (const play of plays) {
+    const playTime = dateMs(play.wallclock);
+    // Track the newest recorded play so a report published seconds after the
+    // final buzzer can still be matched to this game (see candidateForGame).
+    if (playTime) game.lastPlayAt = Math.max(game.lastPlayAt || 0, playTime);
     // An athlete on a roster/timeout/review isn't necessarily a player who checked in.
     if (/\b(timeout|review|challenge|injury|start|end of|eject)\b/i.test(str(play.type?.text)) || !play.type?.text) continue;
     const teamId = str(play.team?.id);
     for (const participant of asArray(play.participants)) {
-      const entry = roster.get(str(participant.athlete?.id));
+      // Play participants may also omit `athlete.id`; resolve it the same way.
+      const entry = roster.get(espnAthleteId(participant.athlete, participant));
       if (entry && (!teamId || entry.teamId === teamId)) addParticipant(game, entry.athlete, entry.teamId, 'ESPN play-by-play: recorded action');
     }
   }
@@ -160,7 +210,7 @@ export function classifyReport(value) {
 export function parseEspnInjuries(data) {
   if (!Array.isArray(data?.injuries)) throw new Error('Invalid ESPN injuries response');
   return data.injuries.flatMap(group => asArray(group.injuries).flatMap(row => {
-    const id = athleteId(row?.athlete?.id);
+    const id = espnAthleteId(row?.athlete, row);
     const teamId = str(group.id || row?.athlete?.team?.id);
     // A mismatch can reflect a trade/incorrect roster; it cannot prove this game's team.
     if (row?.athlete?.team?.id && str(row.athlete.team.id) !== teamId) return [];
@@ -174,25 +224,41 @@ export function parseEspnInjuries(data) {
     const status = /\b(will not return|won't return|remainder of the game)\b/i.test(text) ? 'confirmed_out'
       : /\bquestionable to return\b/i.test(text) ? 'questionable'
       : /\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(text) ? 'returned'
-      : ({ out: 'out', questionable: 'questionable', doubtful: 'questionable', 'day-to-day': 'reported', probable: 'reported' })[str(row.status).toLowerCase()] || 'reported';
+      : ({ out: 'out', questionable: 'questionable', doubtful: 'questionable', 'day-to-day': 'reported', gtd: 'reported', 'out for season': 'out', probable: 'reported' })[str(row.status).toLowerCase()] || 'reported';
     const url = asArray(row.athlete.links).find(link => link.rel?.includes('news') && /^https:\/\/www\.espn\.com\/nba\//.test(link.href))?.href || injuryListUrl;
+    // ESPN records the original wire/reporter inside the injury note (observed: "RotoWire").
+    // Cite it, but never present it as an independently verified team statement.
+    const note = asArray(row?.athlete?.notes?.items).find(item => compact(item?.source));
+    const publisher = compact(note?.source);
     return [{ athleteId: id, teamId, name: compact(row.athlete.displayName), status, text,
-      publishedAt, source: 'ESPN injury report', sourceUrl: url, sourceKey: `espn-injury:${id}:${row.date}:${row.status}:${text}` }];
+      publishedAt, source: publisher ? `ESPN injury report · ${publisher}` : 'ESPN injury report',
+      sourceUrl: url, sourceKey: `espn-injury:${id}:${row.date}:${row.status}:${text}` }];
   }));
 }
+
+// Shared news screening. A routine headline can tag an athlete while its
+// description mentions an OLD injury, so the signal must be in the headline.
+const NEWS_HEADLINE_SIGNAL = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|limp\w*|hurt|exits?|leaves?|left|ruled out|questionable to return|will not return|won't return|out for the game|returned to (?:the )?game)\b/i;
+const NEWS_AFTER_NAME = /\b(injur\w*|illness|concuss\w*|sore\w*|sprain\w*|strain\w*|fracture\w*|tear|torn|pain\w*|hurt|exits?|leaves?|left|ruled out|questionable|will not return|wont return|out)\b/i;
+// Video clips and non-story URLs cannot be cited as an injury report.
+const newsStoryUrl = article => {
+  const url = str(article?.links?.web?.href);
+  return /^https:\/\/www\.espn\.com\/nba\/story\//.test(url) ? url : '';
+};
+const newsSource = article => `ESPN news${article?.byline ? ` \u00b7 ${compact(article.byline)}` : ''}`;
+// Both news routes must produce the SAME sourceKey, or one article would alert twice.
+const newsKey = (article, id, headline) => `espn-news:${article.id}:${id}:${headline}`;
 
 export function parseEspnNews(data) {
   if (!Array.isArray(data?.articles)) throw new Error('Invalid ESPN news response');
   return data.articles.flatMap(article => {
     const headline = compact(article?.headline);
-    // A routine headline can tag the athlete while its description mentions an OLD injury.
-    // Require an injury/availability signal in the headline itself before considering details.
-    if (!/\b(injur\w*|illness|concussion|sore\w*|sprain|strain|fracture|tear|torn|pain|limp\w*|hurt|exits?|leaves?|left|ruled out|questionable to return|will not return|won't return|out for the game)\b/i.test(headline)) return [];
-    const text = compact([headline, article?.description].filter(Boolean).join(' — '));
+    if (!NEWS_HEADLINE_SIGNAL.test(headline)) return [];
+    const text = compact([headline, article?.description].filter(Boolean).join(' \u2014 '));
     const status = classifyReport(text);
     const publishedAt = dateMs(article?.published); // Never use lastModified on rolling articles.
-    const url = str(article?.links?.web?.href);
-    if (!status || !hasMedicalDetail(text) || !publishedAt || !/^https:\/\/www\.espn\.com\/nba\/story\//.test(url) || !headline) return [];
+    const url = newsStoryUrl(article);
+    if (!status || !hasMedicalDetail(text) || !publishedAt || !url || !headline) return [];
     const title = ` ${plainName(headline)} `;
     const named = [...new Map(asArray(article.categories).filter(c => c.type === 'athlete' && athleteId(c.athleteId) &&
       plainName(c.description) && title.includes(` ${plainName(c.description)} `)).map(c => [str(c.athleteId), c])).values()];
@@ -200,12 +266,62 @@ export function parseEspnNews(data) {
     if (named.length !== 1) return [];
     const c = named[0];
     const afterName = title.slice(title.indexOf(` ${plainName(c.description)} `) + plainName(c.description).length + 2);
-    if (!/\b(injur\w*|illness|concussion|sore\w*|sprain|strain|fracture|tear|torn|pain|hurt|exits?|leaves?|left|ruled out|questionable|will not return|wont return|out)\b/i.test(afterName)) return [];
+    if (!NEWS_AFTER_NAME.test(afterName)) return [];
     return [{ athleteId: str(c.athleteId), teamId: '', name: compact(c.description), status,
-      text, publishedAt, source: `ESPN news${article.byline ? ` · ${compact(article.byline)}` : ''}`,
-      sourceUrl: url, sourceKey: `espn-news:${article.id}:${c.athleteId}:${headline}` }];
+      text, publishedAt, source: newsSource(article),
+      sourceUrl: url, sourceKey: newsKey(article, str(c.athleteId), headline) }];
   });
 }
+
+/**
+ * Per-athlete ESPN news for players who are actually on the floor. The league-wide
+ * feed only carries the newest ~50 stories, so role-player injuries fall off it;
+ * this closes that gap. The athlete is known from the request URL, so the headline
+ * still has to name them and must not name another live participant.
+ */
+export function parseAthleteNews(data, athleteIdValue, { name = '', others = [] } = {}) {
+  const id = athleteId(athleteIdValue);
+  const player = compact(name);
+  if (!id || !player) throw new Error('Invalid ESPN athlete news request');
+  if (!Array.isArray(data?.articles)) throw new Error('Invalid ESPN athlete news response');
+  const parts = player.split(/\s+/).filter(Boolean);
+  // A trailing suffix ("Ronald Holland II") is not a usable surname on its own, so
+  // walk back to the last part that could actually be a family name.
+  const surname = parts.map(plainName).reverse().find(form => form.length >= 3) || '';
+  const forms = [...new Set([plainName(player), surname].filter(Boolean))];
+  const self = plainName(player);
+  return data.articles.flatMap(article => {
+    const headline = compact(article?.headline);
+    if (!headline || !NEWS_HEADLINE_SIGNAL.test(headline)) return [];
+    const publishedAt = dateMs(article?.published);
+    const url = newsStoryUrl(article);
+    const text = compact([headline, article?.description].filter(Boolean).join(' \u2014 '));
+    const status = classifyReport(text);
+    if (!publishedAt || !url || !status || !hasMedicalDetail(text)) return [];
+    const title = ` ${plainName(headline)} `;
+    const matched = forms.filter(form => title.includes(` ${form} `));
+    if (!matched.length) return [];
+    for (const other of others) {
+      const form = plainName(other);
+      if (form && form !== self && title.includes(` ${form} `)) return [];
+    }
+    const afterName = title.slice(title.indexOf(` ${matched[0]} `) + matched[0].length + 2);
+    if (!NEWS_AFTER_NAME.test(afterName)) return [];
+    return [{ athleteId: id, teamId: '', name: player, status, text, publishedAt,
+      source: newsSource(article), sourceUrl: url, sourceKey: newsKey(article, id, headline) }];
+  });
+}
+
+// A player hurt on the final possession is often reported a few minutes after the
+// buzzer, while the game is already "post". Accept those only when the report's own
+// timestamp sits at or shortly after the last recorded play.
+const POST_GAME_GRACE = 10 * 60_000;
+function gameAcceptsReports(game, publishedAt) {
+  if (game.phase === 'in') return true;
+  return game.phase === 'post' && Number.isFinite(game.lastPlayAt) && game.lastPlayAt > 0 &&
+    publishedAt >= game.lastPlayAt - 60_000 && publishedAt <= game.lastPlayAt + POST_GAME_GRACE;
+}
+export { POST_GAME_GRACE };
 
 function candidateForGame(engine, candidate, requestedGameId = '') {
   const now = engine.now();
@@ -213,7 +329,8 @@ function candidateForGame(engine, candidate, requestedGameId = '') {
   const games = requestedGameId ? [engine.games.get(requestedGameId)] : [...engine.games.values()];
   const matches = [];
   for (const game of games) {
-    if (!game || game.phase !== 'in' || !Number.isFinite(game.lastScoreboardAt) || now - game.lastScoreboardAt > 90_000 ||
+    if (!game || !gameAcceptsReports(game, candidate.publishedAt) ||
+      !Number.isFinite(game.lastScoreboardAt) || now - game.lastScoreboardAt > 90_000 ||
       candidate.publishedAt < Math.max(game.start, game.liveStartedAt || 0) ||
       ![game.away.id, game.home.id].some(id => !candidate.teamId || id === candidate.teamId)) continue;
     const players = candidate.athleteId ? [game.participants[candidate.athleteId]].filter(Boolean) :
@@ -235,9 +352,10 @@ export class Engine {
     this.health = saved?.health || {};
     this.changed = [];
   }
-  source(name, error = null) {
+  source(name, error = null, extra = null) {
     this.health[name] = { ...this.health[name], checkedAt: this.now(),
-      ...(error ? { error: compact(error) } : { okAt: this.now(), error: '' }) };
+      ...(error ? { error: compact(error) } : { okAt: this.now(), error: '' }),
+      ...(extra || {}) };
   }
   scoreboard(day, data) {
     const incoming = parseScoreboard(data, day);
