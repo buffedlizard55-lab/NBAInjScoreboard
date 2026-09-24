@@ -1,0 +1,24 @@
+name: Verify NBA scoreboard
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install test-only DOM dependency
+        run: npm ci --ignore-scripts
+      - name: Logic, source contracts, UI smoke tests and syntax
+        run: npm run check
+      - name: Read-only public source probe (availability varies by runner)
+        run: node tools/probe.mjs
+        continue-on-error: true
