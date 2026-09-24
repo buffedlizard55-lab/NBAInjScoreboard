@@ -8,11 +8,14 @@ const asArray = value => Array.isArray(value) ? value : [];
 const str = value => value == null ? '' : String(value);
 const dateMs = value => { const ms = Date.parse(value); return Number.isFinite(ms) ? ms : 0; };
 const compact = value => str(value).replace(/\s+/g, ' ').trim();
-const safeId = value => /^\d{6,12}$/.test(str(value)) ? str(value) : '';
+// ESPN legacy athlete IDs can be short (an archived box score includes 6440).
+// Game/event IDs have a different format; do not apply their length gate to players.
+const athleteId = value => /^[1-9]\d{0,11}$/.test(str(value)) ? str(value) : '';
+const gameId = value => /^\d{6,12}$/.test(str(value)) ? str(value) : '';
 export const plainName = value => compact(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/['’]s\b/gi, '').replace(/[^a-z0-9 ]/gi, '').toLowerCase();
 const gameUrl = id => `https://www.espn.com/nba/game/_/gameId/${id}`;
 const injuryListUrl = 'https://www.espn.com/nba/injuries';
-const hasMedicalDetail = value => /\b(injur\w*|illness|concussion|protocol|pain|sore\w*|strain|sprain|bruise|contusion|fracture|tear|torn|swelling|tightness|surgery|ankle|knee|foot|hamstring|calf|hip|groin|back|shoulder|wrist|hand|elbow|neck|quad|achilles|head|finger|thumb|toe|rib|abdominal|oblique|migrain\w*|cramp\w*|dizz\w*|limp\w*)\b/i.test(str(value));
+export const hasMedicalDetail = value => /\b(injur\w*|illness|concussion|protocol|pain|sore\w*|strain|sprain|bruise|contusion|fracture|tear|torn|swelling|tightness|surgery|ankle|knee|foot|hamstring|calf|hip|groin|back|shoulder|wrist|hand|elbow|neck|quad|achilles|head|finger|thumb|toe|rib|abdominal|oblique|migrain\w*|cramp\w*|dizz\w*|limp\w*)\b/i.test(str(value));
 const explicitlyFuture = value => /\b(next game|tomorrow|upcoming game|(?:on|for|out|questionable|doubtful|play|playing|next) (?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?(?: game)?)\b/i.test(str(value)) && !/\b(to return|remainder|tonight|this game)\b/i.test(str(value));
 
 export function easternDate(now = new Date()) {
@@ -29,7 +32,7 @@ export function validDate(value) {
 export function parseScoreboard(data, day) {
   if (!validDate(day) || !Array.isArray(data?.events)) throw new Error('Invalid ESPN scoreboard response');
   return data.events.flatMap(event => {
-    const id = safeId(event?.id);
+    const id = gameId(event?.id);
     const competition = event?.competitions?.[0];
     const home = competition?.competitors?.find(c => c.homeAway === 'home');
     const away = competition?.competitors?.find(c => c.homeAway === 'away');
@@ -53,7 +56,7 @@ function playedMinutes(raw) {
 }
 
 function addParticipant(game, athlete, teamId, proof) {
-  const id = safeId(athlete?.id);
+  const id = athleteId(athlete?.id);
   if (!id || ![game.home.id, game.away.id].includes(str(teamId)) || !compact(athlete.displayName)) return;
   const existing = game.participants[id];
   game.participants[id] = { id, name: compact(athlete.displayName), teamId: str(teamId),
@@ -68,7 +71,7 @@ function espnPlays(game, data) {
     for (const set of asArray(group.statistics)) {
       const minuteIndex = asArray(set.keys).indexOf('minutes');
       for (const row of asArray(set.athletes)) {
-        const id = safeId(row.athlete?.id);
+        const id = athleteId(row.athlete?.id);
         if (id) roster.set(id, { athlete: row.athlete, teamId });
         if (row.didNotPlay === false && minuteIndex >= 0 && playedMinutes(row.stats?.[minuteIndex])) {
           addParticipant(game, row.athlete, teamId, 'ESPN box score: minutes played');
@@ -157,7 +160,7 @@ export function classifyReport(value) {
 export function parseEspnInjuries(data) {
   if (!Array.isArray(data?.injuries)) throw new Error('Invalid ESPN injuries response');
   return data.injuries.flatMap(group => asArray(group.injuries).flatMap(row => {
-    const athleteId = safeId(row?.athlete?.id);
+    const id = athleteId(row?.athlete?.id);
     const teamId = str(group.id || row?.athlete?.team?.id);
     // A mismatch can reflect a trade/incorrect roster; it cannot prove this game's team.
     if (row?.athlete?.team?.id && str(row.athlete.team.id) !== teamId) return [];
@@ -165,7 +168,7 @@ export function parseEspnInjuries(data) {
     if (/\b(personal reasons|suspension|coach's decision|g league|rest day|not with (?:the )?team)\b/i.test(short) && !hasMedicalDetail(short)) return [];
     const text = short && !hasMedicalDetail(short) && hasMedicalDetail(long) ? `${short} — ${long.slice(0, 350)}` : short || long;
     const publishedAt = dateMs(row?.date);
-    if (!athleteId || !teamId || !text || !publishedAt || !hasMedicalDetail(text)) return [];
+    if (!id || !teamId || !text || !publishedAt || !hasMedicalDetail(text)) return [];
     if (explicitlyFuture(text)) return [];
     if (/^(available|active)$/i.test(str(row.status)) && !/\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(text)) return [];
     const status = /\b(will not return|won't return|remainder of the game)\b/i.test(text) ? 'confirmed_out'
@@ -173,8 +176,8 @@ export function parseEspnInjuries(data) {
       : /\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(text) ? 'returned'
       : ({ out: 'out', questionable: 'questionable', doubtful: 'questionable', 'day-to-day': 'reported', probable: 'reported' })[str(row.status).toLowerCase()] || 'reported';
     const url = asArray(row.athlete.links).find(link => link.rel?.includes('news') && /^https:\/\/www\.espn\.com\/nba\//.test(link.href))?.href || injuryListUrl;
-    return [{ athleteId, teamId, name: compact(row.athlete.displayName), status, text,
-      publishedAt, source: 'ESPN injury report', sourceUrl: url, sourceKey: `espn-injury:${athleteId}:${row.date}:${row.status}:${text}` }];
+    return [{ athleteId: id, teamId, name: compact(row.athlete.displayName), status, text,
+      publishedAt, source: 'ESPN injury report', sourceUrl: url, sourceKey: `espn-injury:${id}:${row.date}:${row.status}:${text}` }];
   }));
 }
 
@@ -189,9 +192,9 @@ export function parseEspnNews(data) {
     const status = classifyReport(text);
     const publishedAt = dateMs(article?.published); // Never use lastModified on rolling articles.
     const url = str(article?.links?.web?.href);
-    if (!status || !publishedAt || !/^https:\/\/www\.espn\.com\/nba\/story\//.test(url) || !headline) return [];
+    if (!status || !hasMedicalDetail(text) || !publishedAt || !/^https:\/\/www\.espn\.com\/nba\/story\//.test(url) || !headline) return [];
     const title = ` ${plainName(headline)} `;
-    const named = [...new Map(asArray(article.categories).filter(c => c.type === 'athlete' && safeId(c.athleteId) &&
+    const named = [...new Map(asArray(article.categories).filter(c => c.type === 'athlete' && athleteId(c.athleteId) &&
       plainName(c.description) && title.includes(` ${plainName(c.description)} `)).map(c => [str(c.athleteId), c])).values()];
     // A multi-player headline cannot safely assign a designation to either player.
     if (named.length !== 1) return [];
@@ -340,10 +343,12 @@ export class Engine {
       reported: hasMedicalDetail(wording),
       questionable: /\bquestionable\b/i.test(wording) && hasMedicalDetail(wording),
       out: /\b(ruled out|out)\b/i.test(wording) && hasMedicalDetail(wording),
-      confirmed_out: /\b(will not return|won't return|out for (?:the )?(?:rest|remainder) of (?:the )?game)\b/i.test(wording),
-      returned: /\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(wording)
+      confirmed_out: /\b(will not return|won't return|out for (?:the )?(?:rest|remainder) of (?:the )?game)\b/i.test(wording) &&
+        (hasMedicalDetail(wording) || this.injuries.has(`${game?.id}:${player?.id}`)),
+      returned: /\b(returned to (?:the )?game|cleared to return to (?:the )?game)\b/i.test(wording) &&
+        this.injuries.has(`${game?.id}:${player?.id}`)
     };
-    if (!game || !safeId(candidate.athleteId) || !player || !statusEvidence[candidate.status] ||
+    if (!game || !athleteId(candidate.athleteId) || !player || !statusEvidence[candidate.status] ||
       !normalized.includes(` ${plainName(player.name)} `)) return false;
     return this.accept({ ...candidate, sourceKey: `curated:${candidate.sourceUrl}:${candidate.publishedAt}:${candidate.athleteId}:${candidate.status}` }, game.id);
   }

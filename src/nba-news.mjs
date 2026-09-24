@@ -1,4 +1,4 @@
-import { classifyReport, plainName } from './engine.mjs';
+import { classifyReport, hasMedicalDetail, plainName } from './engine.mjs';
 
 const trim = value => String(value || '').replace(/\s+/g, ' ').trim();
 const signal = /\b(injur\w*|illness|concussion|sore\w*|sprain|strain|fracture|tear|torn|pain|hurt|exits?|leaves?|left|ruled out|questionable to return|will not return|won't return|returned to (?:the )?game)\b/i;
@@ -71,7 +71,7 @@ export function nbaArticle(html, url, participatingNames) {
   const description = decode(story.description);
   const text = trim([h1, description].filter(Boolean).join(' — '));
   const status = classifyReport(text);
-  if (!status || (!signal.test(h1) && !signal.test(description))) return null;
+  if (!status || !hasMedicalDetail(text) || !signal.test(h1)) return null;
   return { athleteId: '', teamId: '', name: names[0], status, text, publishedAt,
     source: 'NBA.com news article', sourceUrl: canonical, sourceKey: `nba-news:${canonical}:${story.datePublished}:${h1}` };
 }

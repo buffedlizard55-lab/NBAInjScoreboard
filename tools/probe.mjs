@@ -30,11 +30,10 @@ const probes = [
   ['NBA official injury-report index', 'https://official.nba.com/nba-injury-report-2025-26-season/', null]
 ];
 
+const results = [];
 function log(result) {
-  const line = JSON.stringify(result);
-  console.log(line);
-  // Actions log archive retrieval can be blocked; PR check-run annotations are API-readable.
-  if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice title=${result.name}::${line.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
+  results.push(result);
+  console.log(JSON.stringify(result));
 }
 
 function htmlShape(name, raw, url) {
@@ -80,4 +79,10 @@ for (const [name, url, extract] of probes) {
     log({ name, status: response.status, cors: response.headers.get('access-control-allow-origin') || 'NOT PRESENT', bytes: raw.length, shape });
   } catch (error) { log({ name, error: error.name === 'AbortError' ? 'Timeout' : String(error.message) }); }
   finally { clearTimeout(timeout); }
+}
+// Actions has a per-step notice limit. A single compact annotation keeps ALL
+// observations accessible through the PR check API when the log archive is blocked.
+if (process.env.GITHUB_ACTIONS === 'true') {
+  const summary = JSON.stringify(results.map(({ name, status, cors, shape, error }) => ({ name, status, cors, shape, error })));
+  console.log(`::notice title=Public source probe results::${summary.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')}`);
 }

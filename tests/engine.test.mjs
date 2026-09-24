@@ -62,6 +62,19 @@ test('reports pending box score participation can be picked up on the next poll'
   engine.summary(GAME_ID, summary()); engine.injuriesFeed(injury());
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
 });
+test('short legacy ESPN athlete IDs retain minutes/play participation and in-game injury matching', () => {
+  const engine = new Engine({ now: () => NOW });
+  engine.scoreboard('2026-10-03', liveScoreboard());
+  const data = summary();
+  data.boxscore.players[0].statistics[0].athletes[0].athlete = { id: '6440', displayName: 'Legacy Test Player' };
+  data.plays[0].participants[0].athlete.id = '6440';
+  engine.summary(GAME_ID, data);
+  const report = injury({ id: '6440', text: 'Legacy Test Player is questionable to return with an ankle sprain.' });
+  report.injuries[0].injuries[0].athlete.displayName = 'Legacy Test Player';
+  engine.injuriesFeed(report);
+  assert.equal(engine.games.get(GAME_ID).participants['6440'].proof, 'ESPN box score: minutes played');
+  assert.equal(engine.snapshot('2026-10-03').injuries[0].status, 'questionable');
+});
 test('recorded basketball action can prove participation even before minutes appear', () => {
   const engine = new Engine({ now: () => NOW });
   engine.scoreboard('2026-10-03', liveScoreboard());
@@ -132,6 +145,7 @@ test('news needs exact athlete in headline, timestamp, explicit injury wording a
   assert.equal(parseEspnNews(duplicateCategory).length, 1);
   assert.equal(parseEspnNews(news({ headline: 'Another Player injures knee' })).length, 0);
   assert.equal(parseEspnNews(news({ headline: 'Test Player signs a contract' })).length, 0);
+  assert.equal(parseEspnNews(news({ headline: 'Test Player will not return after ejection', description: 'Flagrant foul ejection.' })).length, 0);
   assert.equal(parseEspnNews(news({ date: 'invalid' })).length, 0);
   const engine = ready();
   engine.newsFeed(news());
@@ -175,6 +189,9 @@ test('editorial intake still needs live participation and is deduplicated', () =
   assert.equal(engine.curated({ ...item, athleteId: '7654321' }), false);
   assert.equal(engine.curated({ ...item, status: 'confirmed_out' }), false); // no won't-return wording
   assert.equal(engine.curated({ ...item, text: 'Another person has a right ankle injury.' }), false);
+  const standalone = ready();
+  assert.equal(standalone.curated({ ...item, status: 'returned', text: 'Test Player returned to the game.' }), false);
+  assert.equal(standalone.curated({ ...item, status: 'confirmed_out', text: 'Test Player will not return after ejection.' }), false);
   assert.equal(engine.snapshot('2026-10-03').injuries.length, 1);
 });
 test('ESPN raw injury shape and timestamps fail closed', () => {

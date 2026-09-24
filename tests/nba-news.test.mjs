@@ -43,6 +43,8 @@ test('NBA.com article needs matching canonical JSON-LD, headline, dated publicat
     sourceKey: `nba-news:${URL}:${TIME}:${headline}`
   });
   assert.equal(nbaArticle(article('Test Player chats with coach'), URL, ['Test Player']), null);
+  const ejection = article('Test Player will not return').replace('Test Player exited the game with an ankle injury.', 'Test Player was ejected for a flagrant foul.');
+  assert.equal(nbaArticle(ejection, URL, ['Test Player']), null);
   assert.equal(nbaArticle(article('Test Player exits game with ankle injury', URL, '2026-10-03T23:10:00'), URL, ['Test Player']), null);
   assert.equal(nbaArticle(article(), URL, ['Bench Player']), null);
   assert.throws(() => nbaArticle(article(headline, 'https://www.nba.com/news/other-story'), URL, ['Test Player']), /matching dated source/);

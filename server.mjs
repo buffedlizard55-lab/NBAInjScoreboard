@@ -57,7 +57,7 @@ async function report(req, res) {
     const name = str(body.source).trim();
     const publishedAt = Date.parse(body.publishedAt);
     if (!approvedUrl(body.sourceUrl) || text.length < 20 || text.length > 700 || name.length < 3 || name.length > 80 ||
-      !Number.isFinite(publishedAt) || !/^\d{6,12}$/.test(str(body.athleteId)) ||
+      !Number.isFinite(publishedAt) || !/^[1-9]\d{0,11}$/.test(str(body.athleteId)) ||
       !/^\d{6,12}$/.test(str(body.gameId))) return sendJson(res, 422, { error: 'Invalid source, player, game, timestamp or evidence' });
     const changed = collector.engine.curated({ gameId: str(body.gameId), athleteId: str(body.athleteId),
       status: body.status, name: '', teamId: '', text, source: `Curated · ${name}`,
