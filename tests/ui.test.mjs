@@ -26,7 +26,8 @@ function state() {
   const health = Object.fromEntries(['ESPN scoreboard','ESPN play-by-play','ESPN injuries','ESPN news'].map(name => [name, { okAt: now, checkedAt: now, error: '' }]));
   return { mode: 'live', day: today, generatedAt: now, games: [game], injuries, reviews, feed: [...injuries, ...plays], health };
 }
-async function open(page) {
+let openCount = 0;
+async function open(page, mutate = null) {
   const html = await readFile(new URL(`../${page}.html`, import.meta.url), 'utf8');
   const { document, window } = parseHTML(html);
   globalThis.document = document;
@@ -37,12 +38,14 @@ async function open(page) {
   globalThis.localStorage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, String(value)) };
   globalThis.fetch = async url => {
     assert.match(url, /^\/api\/state\?date=/);
-    return new Response(JSON.stringify(state()), { headers: { 'content-type': 'application/json' } });
+    const snapshot = state();
+    if (mutate) mutate(snapshot);
+    return new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } });
   };
   const original = globalThis.setTimeout;
   globalThis.setTimeout = (callback, ms, ...args) => ms >= 10_000 ? 0 : original(callback, ms, ...args);
   try {
-    await import(`../assets/app.js?ui=${page}`);
+    await import(`../assets/app.js?ui=${page}-${openCount++}`);
     await new Promise(resolve => original(resolve, 20));
   } finally { globalThis.setTimeout = original; }
   return document;
@@ -75,4 +78,15 @@ test('all four pages render separate, source-linked feeds from one state; unsafe
   assert.match(game.querySelector('#game-injuries').textContent, /Test Player/);
   assert.match(game.querySelector('#game-reviews').textContent, /challenge/);
   assert.doesNotMatch(game.querySelector('#game-plays').textContent, /ankle sprain/);
+});
+
+test('hosted collector alarms surface in the health panel; missing alarms stay silent', async () => {
+  const alarmed = await open('index', snapshot => {
+    snapshot.alarms = [{ name: 'ESPN injuries', severity: 'critical', reason: '3 consecutive failures: fetch failed' }];
+  });
+  assert.match(alarmed.querySelector('#health-panel').className, /bad/);
+  assert.match(alarmed.querySelector('#health-panel').textContent, /Alarm: ESPN injuries/);
+  // Snapshots without the field (browser fallback) render exactly as before.
+  const plain = await open('alerts');
+  assert.doesNotMatch(plain.querySelector('#health-panel').textContent, /Alarm:/);
 });

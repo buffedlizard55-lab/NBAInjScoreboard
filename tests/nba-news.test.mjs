@@ -56,7 +56,8 @@ test('NBA.com article needs matching canonical JSON-LD, headline, dated publicat
 
 test('server-only NBA.com articles enter the same verified game feed; pre-action reports and duplicates do not alert', async () => {
   let calls = 0;
-  const statePath = join(tmpdir(), `nba-news-test-${randomUUID()}.json`);
+  const runtimeDir = join(tmpdir(), `nba-news-test-${randomUUID()}`);
+  const statePath = join(runtimeDir, 'state.json');
   const collector = new Collector({ now: () => NOW, statePath, client: {
     text: async (_key, url) => { calls++; return url === 'https://www.nba.com/news' ? index([post()]) : article(); }
   } });
@@ -77,7 +78,6 @@ test('server-only NBA.com articles enter the same verified game feed; pre-action
     assert.equal(nbaArticle(future, URL, ['Test Player']), null);
   } finally {
     await collector.stop();
-    await rm(statePath, { force: true });
-    await rm(`${statePath}.tmp`, { force: true });
+    await rm(runtimeDir, { recursive: true, force: true });
   }
 });

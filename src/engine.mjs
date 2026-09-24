@@ -221,7 +221,9 @@ function ingestReviews(engine, game, plays) {
     review.lastEventTime = Math.max(review.lastEventTime || 0, play.time || 0);
     review.updatedAt = engine.now();
     engine.reviews.set(key, review);
-    if (!existing || was !== review.outcome) engine.changed.push({ id: `${key}:${review.outcome || 'started'}`, kind: 'review', gameId: game.id });
+    // The change carries the review payload so the hosted collector can append a
+    // self-describing line to events.jsonl. SSE clients ignore the extra field.
+    if (!existing || was !== review.outcome) engine.changed.push({ id: `${key}:${review.outcome || 'started'}`, kind: 'review', gameId: game.id, review });
   }
 }
 
@@ -478,7 +480,9 @@ export class Engine {
         status: candidate.status, text: candidate.text, time: candidate.publishedAt,
         observedAt: this.now(), proof: player.proof, evidence: [evidence] };
       incident.updates.push(update);
-      this.changed.push({ id: update.id, kind: 'injury', gameId: game.id });
+      // The change carries the update payload so the hosted collector can append
+      // a self-describing line to events.jsonl. SSE clients ignore the extra field.
+      this.changed.push({ id: update.id, kind: 'injury', gameId: game.id, update });
     }
     this.injuries.set(id, incident);
     this.seen.add(candidate.sourceKey);

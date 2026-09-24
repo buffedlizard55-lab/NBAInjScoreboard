@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-24",
+  "_note": "Team PR / reporter / social sources. Empty on purpose: no source authorization, identity verification, terms review or replayable captures exist yet, so automatic collection of these channels is NOT active. Team/reporter/social coverage arrives only through authenticated editorial intake (see README). To propose a source, add a status=proposed entry and follow docs/approved-sources.md; autoPoll requires the full checklist in src/approved-sources.mjs.",
+  "sources": []
+}

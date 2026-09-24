@@ -221,3 +221,94 @@ claim or simulate a live NBA injury; the season is still inactive on the verific
    as a body part rather than an exit) can still mislabel a status. A small labelled corpus of real
    injury sentences, with the resulting status asserted, would make these rules measurable instead of
    eyeballed.
+
+## Session 2026-09-24 (c) — approved-source gates and observability
+
+Follow-up on "what prevents full real-time coverage" items 2 (team/reporter
+channels) and 5 (uptime metrics, error alerts, replayable event store,
+on-call recovery). Worked line by line against the existing code; no provider
+shapes were invented and no automatic team/social collection was enabled.
+
+### 1. Approved team/reporter integrations — gates, not scraping
+
+- New `config/approved-sources.json` ships with **zero entries**: no source
+  authorization, identity verification, terms review or replayable captures
+  exist for any team PR / reporter / social source, so automatic collection
+  of those channels stays OFF. `GET /api/sources` and
+  `node tools/operator.mjs sources` report `0 automatic` on the live server
+  (verified below).
+- New `src/approved-sources.mjs` defines the registry schema (v1) and the
+  gates: `validateSource`/`validateRegistry` (structural + checklist),
+  `isApprovedForAuto` (true only for `approved` + `autoPoll` + full
+  authorization/identity/terms + capture files that exist on disk),
+  `sourceAllowsUrl`/`findSourcesForUrl` (exact HTTPS hosts, X/Twitter
+  `/status/<id>` for listed handles only, suspended never matches).
+- Editorial intake accepts an optional `sourceId` that attributes a report to
+  one registry entry and scopes the URL check to it; without it, the legacy
+  allowlists plus any non-suspended registry entry apply. Validation was
+  extracted to `src/editorial.mjs`, imported by both the server and the
+  operator CLI so preflight cannot drift from enforcement (server stays
+  authoritative on allowlist env and live-game/participation/duplicate gates).
+- Process documented in `docs/approved-sources.md`: propose (no polling
+  changes) → approve (all four gates + verbatim `tests/real/` captures with
+  parser + regression test, mirroring `tests/real-source.test.mjs`) →
+  adapter must call `isApprovedForAuto`.
+- `tests/approved-sources.test.mjs` (6 tests) pins: shipped registry valid
+  with zero auto sources, structural rejections, checklist-before-auto,
+  capture-must-exist-on-disk, duplicate/version guards, URL scoping.
+
+### 2. Observability — metrics, alarms, durable trail, operator tooling
+
+- `src/observability.mjs`: `SourceMetrics` counts real network attempts only
+  (idle no-I/O iterations record nothing); `evaluateAlarms` derives warning
+  at 2 / critical at 3 consecutive failures, live-only staleness windows
+  (ESPN scoreboard/PBP/injuries 90s, ESPN news 180s, player news and NBA.com
+  index 300s), and always-critical storage failures. Fresh boot without
+  failures is not an outage. The collector records every `attempt()`,
+  NBA.com index/article fetch, and storage write, and exposes `alarms()`.
+- `src/event-store.mjs`: append-only `events.jsonl` (one self-describing line
+  per published injury/review transition; engine changes now carry the full
+  update/review payload, serialized synchronously at publish time) and the
+  existing `editorial.jsonl` as the audit log (`report.accepted` /
+  `report.rejected` with reason; unauthenticated requests never logged).
+  Appends chain on the write queue; failures raise storage health + metrics +
+  critical alarms and intake warnings. Token-like keys are stripped
+  (asserted; live logs grepped clean).
+- Server: `/api/health` and new `/api/metrics` (uptime, counters, alarms),
+  `/api/state` now includes `alarms` (UI turns the health panel red with
+  `Alarm: <source>` lines; browser fallback omits the field safely),
+  `/api/sources` (registry as loaded), authenticated `/api/audit` and
+  `/api/events` (bounded to 200, torn lines skipped).
+- `tools/operator.mjs` (`npm run operator -- help`): `health [--check]`
+  (exit 0/1/2 for uptime monitors), `metrics`, `sources`, `sources validate`,
+  `audit`, `events`, `validate --file`, `submit --file`. Token from
+  `INJURY_INGEST_TOKEN` env only, never printed. `docs/observability.md`
+  documents endpoints, thresholds, retention (nothing auto-deletes; archive
+  externally) and first-pass on-call recovery.
+
+### Tests and live checks this session
+
+- `npm run check` (now syntax-checks `server.mjs`, `assets/app.js`,
+  `src/*.mjs`, `tools/*.mjs`): **67 passing** (was 43). New suites:
+  observability (6), event-store (3), approved-sources (6), editorial (4),
+  operator (4, incl. stub-server `--check` exit codes 0/1/2), plus a UI
+  alarms test.
+- Live server (sandbox, no egress — upstream failures are the honest
+  degraded state): `/api/health` showed real `fetch failed` metrics with
+  `alarms: []` after one failure round; `/api/sources` reported 0
+  automatic; `/api/audit` 401 without token; two 422 intake attempts
+  (bad-URL and no-live-game) were both audited as `report.rejected`.
+- Live accept path with a seeded in-progress game + participant: curated
+  `questionable` report → 201, one self-describing line in `events.jsonl`,
+  visible in `/api/events` and `/api/state`; duplicate → 422 with no new
+  event line. `editorial.jsonl`/`events.jsonl` contained no token.
+- `git diff --check` passed.
+
+### Still not done (unchanged constraints)
+
+- No team/reporter/social authorization, identity proof, terms clearance or
+  captures exist, so item 2's automatic coverage is still zero by design.
+- No live NBA slate was available; alarm thresholds, staleness windows and
+  the event/audit retention story are reasoned from the poll schedule, not
+  measured under game load. The first live slate still needs the recorded
+  truth-set review (item 8): `/api/events` now makes that capture trivial.
