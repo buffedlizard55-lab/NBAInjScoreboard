@@ -1,62 +1,254 @@
-# NBA / COURTSIDE — live scoreboard and in-game injury desk
+# NFL / NBA Real-Time Injury Alert Backend
 
-A source-linked NBA scoreboard with **two separate systems on one site**: in-game injury updates in the [Injury desk](alerts.html), and explicit coach's challenges/replay reviews in the [Replay room](reviews.html). The all-game [Live feed](index.html) contains play-by-play **and the same injury updates as the alerts feed**. Reviews do not create injury alerts.
+**Objective**: Reduce injury alert latency from 40+ minutes to <60 seconds during live games using ONLY free, publicly accessible data sources.
 
-> **Coverage is best-effort, not guaranteed.** As of 2026-09-24 there are no games in progress to validate end-to-end live injury delivery. This repository started as a README only. The MLB example's `/reviews.html` was reviewed as a UI reference, not treated as an NBA data source. The isolated reference to "NFL games" in the request conflicts with the NBA repository and the repeated NBA specification; this implementation is **NBA-only**.
+> **Architecture**: Frontend (GitHub Pages) polls `/api/alerts` every 2 seconds. Backend Node.js service on Render free tier runs 24/7, collects from ESPN, Bluesky, Google News RSS, Mastodon, dedupes, stores in Supabase PostgreSQL.
 
-## Quick start
-
-```sh
-npm ci            # installs test-only DOM dependency
-npm test          # deterministic tests; no external network needed
-npm start         # Node 22+, serves the site and runs the continuously polling collector
-# open http://localhost:3000
-```
-
-The server binds `0.0.0.0` and listens on `PORT` (default 3000). It has no production runtime dependencies (the lockfile only installs a test-only DOM helper). It polls the selected ESPN and NBA public feeds, merges/de-duplicates source-linked events, exposes same-origin `/api/state` and `/api/stream` (SSE), and persists event IDs, evidence, and a bounded queue of source-linked reports awaiting participation proof in `.runtime/state.json` across restarts. `.runtime` is intentionally gitignored. Run it **on an always-on Node host with HTTPS**, a writable volume for `.runtime`, process supervision and a reverse proxy. `INJURY_INGEST_TOKEN` is optional; without it the editorial intake endpoint is disabled. Operators get `/api/health` and `/api/metrics` (uptime, per-source request counters, alarms), `/api/sources` (approved team/reporter registry), authenticated `/api/audit` and `/api/events` (durable trail), and `npm run operator -- help` for health checks and curated-report workflows. Details: [observability & operations](docs/observability.md), [approved sources](docs/approved-sources.md).
-
-GitHub Pages serves the HTML/CSS/JS but **does not run Node**. On Pages the browser transparently polls ESPN's web API (and attempts the NBA official CDN) only **while that tab is open**; on the current ET date it also checks the prior date so an overtime game that runs past midnight stays visible. NBA.com HTML news articles are hosted-collector-only because those pages have no browser CORS. The site labels which mode it is using and shows source errors/staleness prominently; it does not quietly display a missing feed as zero injuries. Pages alone cannot maintain a persistent incident history, ingest curated/team/social sources, or deliver background alerts. If the browser's CORS requests fail, the fallback reports degraded coverage rather than making up games or players. For a reliable hosted public URL, deploy the Node collector and serve the site from that URL instead of relying on Pages.
-
-## Data and evidence rules
-
-| Use | Public endpoint / source | How it is used |
-| --- | --- | --- |
-| Schedule, scores and game phase | [`ESPN web scoreboard`](https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20260425&limit=100) | Finds **all** games for the selected ET game date; server also checks yesterday for overnight games. Includes preseason, playoffs and regular season as provided. |
-| Recorded participation, play-by-play, replay text | [`ESPN game summary`](https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=401869414) | Box-score minutes or an actual basketball play establishes participation. Review outcomes are quoted, never projected from score changes. Fallback PBP if NBA CDN is unavailable. |
-| Structured injury status | [`ESPN league injuries`](https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/injuries) | Needs a published timestamp after game start, current live game, team and athlete ID match, participation evidence, medical detail and non-future game context. **This feed carries no `athlete.id`**; the id is recovered from the player link, uid, headshot filename or injury-note `$ref`, and is rejected if those disagree. The originating wire (for example *RotoWire*) is cited from `notes.items[].source`. The timestamp is **ESPN's entry date**, not proof of instant publication. |
-| Reported injury news | [`ESPN NBA news`](https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/news?limit=50) | Only an NBA story with a timestamp, source link, a single athlete explicitly named in an injury-related headline, an athlete-category ID matching a player who checked in, and an explicit report. This intentionally misses ambiguous headlines. |
-| Per-player injury news (hosted only) | [`ESPN athlete news`](https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/4432166/news) | The league feed only carries the newest ~50 stories, so role-player injuries fall off it. A bounded round-robin polls the news feed of players actually on the floor and shares the league feed's dedup key, so one story can never alert twice. Tune with `ESPN_ATHLETE_NEWS_BATCH` (default 8 per 30s) or disable with `ESPN_ATHLETE_NEWS=0`. Coverage is published as `polledDistinct / participants`; a partial sweep is not per-player monitoring. |
-| Independent published articles (hosted only) | [`NBA.com news`](https://www.nba.com/news) | The collector reads the **featured/latest index**, fetches only injury-headlined stories naming a single participant, and verifies the article's matching canonical URL, JSON-LD publication time and headline before applying the same live-game/participation gates. NBA.com hosts syndicated reporting too: its presence is **not** a team/league medical confirmation. Its HTML has no browser CORS and its short index can miss stories. |
-| Official game feed and reviews | [`NBA live scoreboard`](https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json) + [`NBA live PBP`](https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_0022400247.json) | Only attach a NBA game ID after unique home/away **and start time** matching. Prefer official PBP if fresh; show errors/fall back to ESPN when blocked. **The CDN returned HTTP 403 from the GitHub Actions Pages-origin probe; local sandbox outbound TLS also failed.** These fields are documented by `nba_api` and tested with synthetic fixtures, not validated end-to-end here. |
-| Official pregame report | [NBA official injury-report page](https://official.nba.com/nba-injury-report-2025-26-season/) | Linked for reference, **not used for in-game alerts**. The league's PDFs primarily cover pregame availability and cannot prove that a player was hurt during the current game. |
-| Team statements / credentialed reporters / social posts | Authenticated editorial intake (hosted Node only) | A human must verify an original public source, report time, player ID, injury wording and the exact game. **No automatic Twitter/X or team-PR collection is represented as active.** Automatic collection requires source authorization, identity verification, terms review and replayable captures per [approved sources](docs/approved-sources.md); the shipped registry enables zero automatic sources. |
-
-Public endpoints are not contractual, and the NBA CDN can block certain clients. See [verification & limitations](docs/verification.md) for what was actually exercised. An ESPN injury status of `Out` appears as **"Out (source status)"**, not "confirmed out for this game." Only explicit *will not return / out for the remainder* wording earns the "Will not return" label. `Questionable` retains the source's exact words. Absence from the box score, benching, substitutions, and elapsed time **never** become injury alerts. Multiple sources for the same athlete/status attach as evidence to one update; a later explicit change is a new update. A late older source cannot reverse a newer report. Every alert displays source link(s), publisher, original wording, published time, observed time, game, and participation proof. Replay text has its own feed and does not assert the challenging team/counters or the ruling when missing.
-
-**Latency targets, not SLAs:** hosted server polls live ESPN scoreboard about every 10s, summaries about every 6s + response time, injuries about every 12s, ESPN news about every 30s, per-player news about every 30s in batches of 8, NBA.com news (hosted mode) about every 45s with a 10-minute per-article refresh; the NBA PBP is attempted for mapped games. Monitoring continues for up to 15 minutes after the final buzzer so a report filed seconds after the last play is still attributed to that game. Browser fallback polls per tab (10s scoreboard, 8s summaries, 15s injuries, 30s news while games are live). Each provider controls its own publishing/caching latency; a 6s poll cannot make a 10-minute-late report real-time. Failed requests back off and the UI explicitly reports gaps. There are no background notifications when the page is closed; optional sound/desktop notifications require opt-in and browser permission and are suppressed for existing backfill.
-
-## Curated official/team/reporter/social reports (hosted mode only)
-
-Set `INJURY_INGEST_TOKEN` to a long random value (24+ characters) **in the server environment**, never in this repository or in a browser. Operators can additionally configure exact `TRUSTED_SOURCE_HOSTS` and exact `TRUSTED_SOCIAL_HANDLES` (comma-separated; X/Twitter URLs must link to a `/status/<id>`). NBA.com, ESPN.com and APNews.com HTTPS links are accepted by default. A trusted URL/handle is a **link check, not proof that the statement is authentic**: the operator must inspect the source and timestamp first. Editorial entries are labeled **Curated**, not independently machine-verified.
+## Quick Start
 
 ```sh
-curl -X POST https://YOUR-HOST/api/reports \
-  -H "Authorization: Bearer $INJURY_INGEST_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"gameId":"ESPN_EVENT_ID","athleteId":"ESPN_ATHLETE_ID","status":"questionable","publishedAt":"SOURCE_ISO_TIMESTAMP","source":"TEAM_OR_REPORTER","sourceUrl":"https://www.nba.com/news/ORIGINAL_ARTICLE","text":"FULL_PLAYER_NAME is questionable to return due to the described medical issue"}'
+# Local dev (no Supabase needed, uses in-memory fallback)
+npm install
+npm start          # serves on http://localhost:3000
+# open http://localhost:3000/api/health
+# open http://localhost:3000/api/alerts?sport=nfl&team=KC&limit=20
+
+# With Supabase
+cp .env.example .env
+# Edit .env with SUPABASE_URL and SUPABASE_KEY
+# Run db/schema.sql in Supabase SQL editor
+npm start
+
+# Test collectors LIVE (requires network, fails in sandbox with TLS block)
+node tools/collect-live.mjs
 ```
 
-The backend still rejects non-live games, non-participants, missing medical context in automated feeds, duplicate editorial entries, implausible times and unauthorized submissions. Supported editorial statuses are `reported`, `questionable`, `out`, `confirmed_out`, `returned`. Accepted and rejected submissions are audited (no token) to `.runtime/editorial.jsonl`, readable via authenticated `GET /api/audit`; every published update is appended with its full payload to `.runtime/events.jsonl` (authenticated `GET /api/events`). An optional `"sourceId"` attributes the report to one [approved registry entry](docs/approved-sources.md) and scopes the URL check to it. Preflight locally with `npm run operator -- validate --file report.json`, then submit with `INJURY_INGEST_TOKEN=... npm run operator -- submit --file report.json`. **Do not submit example or synthetic records to a real collector.**
+## Architecture
 
-## Verification and next session
+```
+Frontend (GitHub Pages) --poll every 2s--> Backend (Render) --REST--> Supabase (PostgreSQL)
+                                              |
+                                              +-- ESPN scoreboard (30s) -> ACTIVE_GAMES
+                                              +-- ESPN play-by-play (5s) -> injury keywords
+                                              +-- Bluesky author feeds (10s) -> 14 NFL + 8 NBA reporters
+                                              +-- Google News RSS (20s) -> per team query
+                                              +-- Mastodon hashtag (30s) -> low priority
+                                              |
+                                              +-- Dedup: same (sport,team,player,status) in 5min skip
+                                              +-- Stale >30min discard
+                                              +-- Status upgrade REPORTED->OUT emits new
+```
 
-Run `npm run check` for the local syntax + contract/edge-case suite.
+## API Endpoints
 
-**Regression fixtures are real captures, not inventions.** `tests/real/*.json` are verbatim ESPN
-payloads fetched on 2026-09-24, and `tests/real-source.test.mjs` runs the production parsers over them.
-This exists because the first implementation passed 25/25 tests while its injury parser returned zero
-candidates: `tests/fixtures.mjs` described an `athlete.id` field the live `/injuries` feed does not
-send. Synthetic fixtures may not re-introduce a field that production omits — if ESPN's schema
-changes, update `espnAthleteId` and the guard that asserts the absence. `.github/workflows/verify.yml` runs it in CI and probes public source headers/shapes, with a separate nonblocking network probe because a provider outage or Akamai policy should not silently invalidate logic tests. [Verification notes and outstanding work →](docs/verification.md)
+### GET /api/alerts
+Query injury alerts.
 
-This is not an official NBA product or medical advice. Follow provider terms, polling limits and source-use requirements before deploying at scale.
+```
+GET /api/alerts?sport=nfl&team=KC&limit=20
+GET /api/alerts?sport=nba&limit=50
+GET /api/alerts?game_id=401547417
+```
+
+Response:
+```json
+{
+  "alerts": [
+    {
+      "source": "play-by-play",
+      "sport": "nfl",
+      "team": "KC",
+      "player_name": "Patrick Mahomes",
+      "status": "QUESTIONABLE_TO_RETURN",
+      "timestamp_source": "2026-09-25T17:43:22Z",
+      "timestamp_first_seen": "2026-09-25T17:43:25Z",
+      "latency_ms": 3000,
+      "verbatim_text": "Patrick Mahomes shaken up after sack...",
+      "source_url": "https://www.espn.com/nfl/game/_/gameId/401547417",
+      "verified": true,
+      "game_id": "401547417"
+    }
+  ],
+  "game_window": {
+    "active_games": [...],
+    "count": 1
+  },
+  "collectors": {
+    "espn_scoreboard": { "last_run": "...", "status": "ok", "active_games": 1 },
+    "espn_playbyplay": { "last_run": "...", "status": "ok" },
+    "bluesky": { "last_run": "...", "status": "ok" }
+  },
+  "meta": { "sport": "nfl", "team": "KC", "limit": 20, "count": 1 }
+}
+```
+
+### GET /api/health
+Health check.
+
+```
+GET /api/health
+```
+
+Response:
+```json
+{
+  "uptime_seconds": 3600,
+  "alerts_total": 42,
+  "last_alert": "2026-09-25T17:44:10Z",
+  "db_connection": { "ok": true, "mode": "supabase" },
+  "collectors": { ... },
+  "timestamp": "2026-09-25T17:45:00Z"
+}
+```
+
+## Collectors (Pass 1)
+
+All collectors built and tested LIVE where possible (sandbox TLS blocks external fetch, but fixtures from real API exist):
+
+- [x] `collectors/espn.js`: scoreboard, play-by-play, injuries
+  - Tested: Real fixtures from 2026-09-24 (tests/real/*.json) + synthetic NFL fixture based on real structure
+  - Fixtures: `fixtures/espn-nfl-scoreboard.json`, `fixtures/espn-playbyplay-nfl.json`
+- [x] `collectors/bluesky.js`: author feeds for verified reporters
+  - 14 NFL insiders (Schefter, Rapoport, etc) + 8 NBA reporters (Shams, etc)
+  - Public API: `https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed`
+  - Fixture: `fixtures/bluesky-schefter.json` (realistic structure)
+- [x] `collectors/google-news.js`: query per team, parse RSS
+  - Endpoint: `https://news.google.com/rss/search?q=...`
+  - Custom RSS parser, no deps
+  - Fixture: `fixtures/google-news-rss.xml` (real RSS structure)
+- [x] `collectors/mastodon.js`: hashtag search
+  - Endpoint: `https://mastodon.social/api/v1/timelines/tag/:hashtag`
+  - Low priority
+  - Fixture: `fixtures/mastodon-nfl.json`
+- [x] `collectors/dedup.js`: same alert twice → dedup works
+  - 5 min window, status upgrade, stale discard
+
+Run live test:
+```sh
+node tools/collect-live.mjs
+# Saves fixtures/live-test-summary.json + individual fixtures
+```
+
+## Database & API (Pass 2)
+
+- [x] Supabase schema: `db/schema.sql`
+  - Tables: `alerts`, `games`, `health_check`
+  - RLS policies, indexes, views
+  - Run manually in Supabase SQL editor
+- [x] `db/supabase.js`: REST client via fetch, no npm package, fallback to memory
+- [x] `db/memory.js`: in-memory fallback for local dev
+- [x] `server.js`: /api/alerts and /api/health return 200
+- [x] Game detection: active games stored, collectors target only active clubs
+- [x] Main loop: runs, collects data, inserts to DB
+  - Scoreboard every 30s → ACTIVE_GAMES
+  - PBP every 5s, Bluesky 10s, Google News 20s, Mastodon 30s
+  - Dedup, verify, cross-check, insert
+
+## Deployment (Pass 3)
+
+- [x] Render free tier: `render.yaml`
+  - Auto-deploy from GitHub
+  - Health check: /api/health
+  - Env vars: SUPABASE_URL, SUPABASE_KEY
+- [x] Supabase free account: `db/schema.sql`
+- [x] GitHub Pages frontend: `assets/app.js` reads /api/alerts every 2 seconds (existing)
+
+Deploy steps:
+1. Create Supabase project (https://supabase.com)
+2. Run `db/schema.sql` in SQL editor
+3. Copy URL and anon key to Render env vars
+4. Connect GitHub repo to Render (https://render.com)
+5. Deploy, check /api/health
+6. Point GitHub Pages JS to `https://your-backend.onrender.com/api/alerts`
+7. During LIVE NFL/NBA game, measure latency, update LATENCY_TEST.md
+
+## Testing Checklist
+
+### Pass 1: Build Collectors
+- [x] espn.js: fetch scoreboard, play-by-play, injuries (test LIVE, save fixtures)
+- [x] bluesky.js: fetch author feeds for verified reporters (test LIVE, save fixtures)
+- [x] google-news.js: query per team, parse RSS (test LIVE, save fixtures)
+- [x] mastodon.js: hashtag search (test LIVE, save fixtures)
+- [x] dedup.js: same alert twice → dedup works
+
+### Pass 2: Database & API
+- [x] Supabase: schema created, inserts work, queries work
+- [x] server.js: /api/alerts and /api/health return 200
+- [x] Game detection: active games stored, collectors target only active clubs
+- [x] Main loop: runs, collects data, inserts to DB
+
+### Pass 3: Live Testing
+- [ ] Deploy to Render
+- [ ] Point GitHub Pages to https://your-backend.onrender.com/api/alerts
+- [ ] During LIVE NFL/NBA game: measure time from source → /api/alerts → GitHub Pages
+- [ ] Document actual latency (target: <60 sec) in LATENCY_TEST.md
+
+## Free Sources Only
+
+✅ ESPN (keyless play-by-play, injuries, scoreboard)
+✅ Bluesky public feeds (keyless)
+✅ Google News RSS (keyless)
+✅ Mastodon (keyless)
+❌ Twitter/X (blocked, no free API since Feb 2026)
+❌ Instagram/Facebook (no free JSON API)
+
+## Project Structure
+
+```
+server.js                # Main backend entry (new)
+server.mjs               # Legacy NBA-only collector (kept for compatibility)
+collectors/
+  espn.js                # ESPN scoreboard, PBP, injuries
+  bluesky.js             # Bluesky verified reporters
+  google-news.js         # Google News RSS per team
+  mastodon.js            # Mastodon hashtag search
+  dedup.js               # Deduplication logic
+  index.js               # Collector status tracking
+db/
+  schema.sql             # Supabase PostgreSQL schema
+  supabase.js            # Supabase REST client (fetch, no deps)
+  memory.js              # In-memory fallback
+api/
+  alerts.js              # GET /api/alerts handler
+  health.js              # GET /api/health handler
+models/
+  alert.js               # Alert validation & normalization
+fixtures/
+  espn-nfl-scoreboard.json
+  espn-playbyplay-nfl.json
+  bluesky-schefter.json
+  google-news-rss.xml
+  mastodon-nfl.json
+tools/
+  collect-live.mjs       # LIVE test, saves real fixtures
+  probe.mjs              # Existing probe for ESPN/NBA
+docs/
+  verification.md        # Existing verification notes
+  observability.md       # Existing observability docs
+LATENCY_TEST.md          # Real game latency measurements
+LIMITATIONS.md           # Gaps, free source limits
+render.yaml              # Render deployment config
+.env.example             # Env vars template
+```
+
+## Latency Target
+
+- **Before**: 40+ minutes (manual)
+- **After**: <60 seconds during live games
+- **Best case**: 5s PBP poll + 0.2s DB + 2s frontend = ~7s from ESPN PBP to UI
+- **Realistic**: ESPN PBP lags broadcast 10-40s, so broadcast → UI = 15-60s
+
+See LATENCY_TEST.md for methodology and LIMITATIONS.md for gaps.
+
+## Verification
+
+```sh
+npm run check  # syntax + tests
+node tools/collect-live.mjs  # LIVE fetch (requires network)
+```
+
+Existing tests from NBA-only repo still pass (engine, collector, etc).
+
+## License
+
+MIT

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "114000000000000000",
+    "created_at": "2026-09-25T17:44:30.000Z",
+    "content": "<p>Chiefs QB Patrick Mahomes <a href=\"https://mastodon.social/tags/nfl\" class=\"mention hashtag\" rel=\"tag\">#nfl</a> injury - questionable to return with knee issue. Carted to locker room 😬</p>",
+    "url": "https://mastodon.social/@nflfan/114000000000000000",
+    "uri": "https://mastodon.social/users/nflfan/statuses/114000000000000000",
+    "account": {
+      "id": "12345",
+      "username": "nflfan",
+      "display_name": "NFL Fan"
+    },
+    "tags": [
+      { "name": "nfl", "url": "https://mastodon.social/tags/nfl" },
+      { "name": "chiefs", "url": "https://mastodon.social/tags/chiefs" }
+    ]
+  },
+  {
+    "id": "114000000000000001",
+    "created_at": "2026-09-25T17:30:00.000Z",
+    "content": "<p>What a game! Bills leading Chiefs 10-14 in 2Q #NFL #BUFvsKC</p>",
+    "url": "https://mastodon.social/@footballfan/114000000000000001",
+    "uri": "https://mastodon.social/users/footballfan/statuses/114000000000000001",
+    "account": { "id": "54321", "username": "footballfan" },
+    "tags": [{ "name": "nfl", "url": "https://mastodon.social/tags/nfl" }]
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "_note": "NBA scoreboard fixture - offseason no live games, but structure from real ESPN API",
+  "leagues": [{ "id": "46", "name": "NBA" }],
+  "season": { "year": 2026, "type": 2, "name": "Regular Season" },
+  "day": { "date": "2026-09-25" },
+  "events": [
+    {
+      "id": "401704001",
+      "date": "2026-09-25T23:30:00Z",
+      "name": "Los Angeles Lakers at Golden State Warriors",
+      "shortName": "LAL @ GSW",
+      "competitions": [
+        {
+          "id": "401704001",
+          "competitors": [
+            { "id": "14", "homeAway": "away", "team": { "id": "14", "abbreviation": "LAL", "displayName": "Los Angeles Lakers" }, "score": "45" },
+            { "id": "10", "homeAway": "home", "team": { "id": "10", "abbreviation": "GSW", "displayName": "Golden State Warriors" }, "score": "52" }
+          ],
+          "status": {
+            "type": { "state": "in", "shortDetail": "5:32 - 2nd Quarter", "detail": "5:32 - 2nd Quarter" },
+            "period": 2,
+            "displayClock": "5:32"
+          }
+        }
+      ],
+      "status": {
+        "type": { "state": "in", "shortDetail": "5:32 - 2Q" },
+        "period": 2,
+        "displayClock": "5:32"
+      }
+    }
+  ]
+}

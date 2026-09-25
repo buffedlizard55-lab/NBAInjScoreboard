@@ -1,0 +1,61 @@
+{
+  "_note": "ESPN NFL play-by-play fixture with injury keywords - based on real ESPN summary structure",
+  "header": { "id": "401547417", "competitions": [{ "id": "401547417" }] },
+  "boxscore": {
+    "players": [
+      {
+        "team": { "id": "12", "abbreviation": "KC" },
+        "statistics": [
+          {
+            "keys": ["passingYards", "minutes"],
+            "athletes": [
+              {
+                "athlete": { "id": "3139477", "displayName": "Patrick Mahomes", "links": [{ "href": "https://www.espn.com/nfl/player/_/id/3139477/patrick-mahomes" }], "headshot": { "href": "https://a.espncdn.com/i/headshots/nfl/players/full/3139477.png" } },
+                "didNotPlay": false,
+                "stats": ["250", "60"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "plays": [
+    {
+      "id": "4015474171",
+      "type": { "text": "Pass" },
+      "text": "Patrick Mahomes pass complete to Travis Kelce for 12 yards",
+      "wallclock": "2026-09-25T17:42:00Z",
+      "period": { "number": 2 },
+      "clock": { "displayValue": "10:42" },
+      "team": { "id": "12", "abbreviation": "KC" },
+      "participants": [{ "athlete": { "id": "3139477", "displayName": "Patrick Mahomes" } }],
+      "homeScore": "10",
+      "awayScore": "14"
+    },
+    {
+      "id": "4015474172",
+      "type": { "text": "Injury" },
+      "text": "Patrick Mahomes shaken up after sack, trainers evaluating knee injury, questionable to return",
+      "wallclock": "2026-09-25T17:43:22Z",
+      "period": { "number": 2 },
+      "clock": { "displayValue": "10:15" },
+      "team": { "id": "12", "abbreviation": "KC" },
+      "participants": [{ "athlete": { "id": "3139477", "displayName": "Patrick Mahomes" } }],
+      "homeScore": "10",
+      "awayScore": "14"
+    },
+    {
+      "id": "4015474173",
+      "type": { "text": "Injury Timeout" },
+      "text": "Injury timeout: Mahomes helped off field, carted to locker room",
+      "wallclock": "2026-09-25T17:44:00Z",
+      "period": { "number": 2 },
+      "clock": { "displayValue": "10:10" },
+      "team": { "id": "12", "abbreviation": "KC" },
+      "participants": [{ "athlete": { "id": "3139477", "displayName": "Patrick Mahomes" } }],
+      "homeScore": "10",
+      "awayScore": "14"
+    }
+  ]
+}

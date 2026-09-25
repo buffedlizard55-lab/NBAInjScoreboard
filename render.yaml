@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: nba-nfl-injury-alerts
+    env: node
+    plan: free
+    buildCommand: npm ci --only=production || npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PORT
+        value: 10000
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Free tier sleeps after 15 min inactivity, but we run 24/7 collector
+    # For true 24/7, use cron job to ping /api/health every 10 min
