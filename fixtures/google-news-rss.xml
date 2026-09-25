@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>KC Chiefs injury nfl - Google News</title>
+    <link>https://news.google.com/search?q=KC+Chiefs+injury+nfl</link>
+    <description>Google News RSS</description>
+    <item>
+      <title>Chiefs QB Patrick Mahomes questionable to return with knee injury vs Bills</title>
+      <link>https://www.espn.com/nfl/story/_/id/401547417/chiefs-mahomes-questionable-knee</link>
+      <pubDate>Thu, 25 Sep 2026 17:45:00 GMT</pubDate>
+      <description>Chiefs quarterback Patrick Mahomes suffered a knee injury in the second quarter and is questionable to return against the Bills.</description>
+      <source url="https://www.espn.com">ESPN</source>
+    </item>
+    <item>
+      <title>Patrick Mahomes injury update: Chiefs star exits game, evaluation ongoing</title>
+      <link>https://www.nfl.com/news/mahomes-injury-update-chiefs-bills</link>
+      <pubDate>Thu, 25 Sep 2026 17:46:30 GMT</pubDate>
+      <description>Patrick Mahomes was helped off the field after taking a sack. The team says he is being evaluated for a knee injury.</description>
+      <source url="https://www.nfl.com">NFL.com</source>
+    </item>
+    <item>
+      <title>Chiefs vs Bills live score updates: Game tied in second quarter</title>
+      <link>https://www.example.com/live-score</link>
+      <pubDate>Thu, 25 Sep 2026 17:30:00 GMT</pubDate>
+      <description>Live updates from Chiefs vs Bills game...</description>
+      <source url="https://www.example.com">Example</source>
+    </item>
+  </channel>
+</rss>

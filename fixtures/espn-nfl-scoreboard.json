@@ -1,0 +1,114 @@
+{
+  "_note": "Realistic NFL scoreboard fixture based on ESPN API structure, captured 2026-09-24 pattern. In sandbox live fetch fails due to TLS syscall issue, but structure matches real API.",
+  "leagues": [{ "id": "28", "name": "NFL" }],
+  "season": { "year": 2026, "type": 2, "name": "Regular Season" },
+  "day": { "date": "2026-09-25" },
+  "events": [
+    {
+      "id": "401547417",
+      "uid": "s:20~l:28~e:401547417",
+      "date": "2026-09-25T17:00:00Z",
+      "name": "Kansas City Chiefs at Buffalo Bills",
+      "shortName": "KC @ BUF",
+      "competitions": [
+        {
+          "id": "401547417",
+          "uid": "s:20~l:28~e:401547417~c:401547417",
+          "date": "2026-09-25T17:00:00Z",
+          "competitors": [
+            {
+              "id": "2",
+              "uid": "s:20~l:28~t:2",
+              "type": "team",
+              "homeAway": "away",
+              "team": {
+                "id": "12",
+                "uid": "s:20~l:28~t:12",
+                "abbreviation": "KC",
+                "displayName": "Kansas City Chiefs",
+                "shortDisplayName": "Chiefs",
+                "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"
+              },
+              "score": "14"
+            },
+            {
+              "id": "1",
+              "uid": "s:20~l:28~t:1",
+              "type": "team",
+              "homeAway": "home",
+              "team": {
+                "id": "2",
+                "uid": "s:20~l:28~t:2",
+                "abbreviation": "BUF",
+                "displayName": "Buffalo Bills",
+                "shortDisplayName": "Bills",
+                "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/buf.png"
+              },
+              "score": "10"
+            }
+          ],
+          "status": {
+            "clock": 0,
+            "displayClock": "10:42",
+            "period": 2,
+            "type": {
+              "id": "2",
+              "name": "STATUS_IN_PROGRESS",
+              "state": "in",
+              "completed": false,
+              "description": "In Progress",
+              "detail": "10:42 - 2nd Quarter",
+              "shortDetail": "10:42 - 2Q"
+            }
+          }
+        }
+      ],
+      "status": {
+        "clock": 0,
+        "displayClock": "10:42",
+        "period": 2,
+        "type": {
+          "id": "2",
+          "name": "STATUS_IN_PROGRESS",
+          "state": "in",
+          "completed": false,
+          "description": "In Progress",
+          "detail": "10:42 - 2nd Quarter",
+          "shortDetail": "10:42 - 2Q"
+        }
+      }
+    },
+    {
+      "id": "401547418",
+      "uid": "s:20~l:28~e:401547418",
+      "date": "2026-09-25T20:15:00Z",
+      "name": "Philadelphia Eagles at Dallas Cowboys",
+      "shortName": "PHI @ DAL",
+      "competitions": [
+        {
+          "id": "401547418",
+          "competitors": [
+            {
+              "id": "21",
+              "homeAway": "away",
+              "team": { "id": "21", "abbreviation": "PHI", "displayName": "Philadelphia Eagles" },
+              "score": "0"
+            },
+            {
+              "id": "6",
+              "homeAway": "home",
+              "team": { "id": "6", "abbreviation": "DAL", "displayName": "Dallas Cowboys" },
+              "score": "0"
+            }
+          ],
+          "status": {
+            "type": { "state": "pre", "shortDetail": "8:15 PM ET" }
+          }
+        }
+      ],
+      "status": {
+        "type": { "state": "pre", "shortDetail": "8:15 PM ET" }
+      }
+    }
+  ]
+}

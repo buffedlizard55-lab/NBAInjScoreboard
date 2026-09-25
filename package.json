@@ -1,18 +1,25 @@
 {
-  "name": "nba-live-injury-scoreboard",
-  "version": "0.1.0",
+  "name": "nfl-nba-injury-alert-backend",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "Real-time NFL/NBA injury alerts <60s latency - free sources only",
   "engines": {
-    "node": ">=22"
+    "node": ">=18"
   },
   "scripts": {
-    "start": "node server.mjs",
+    "start": "node server.js",
+    "start:legacy": "node server.mjs",
     "test": "node --test",
+    "test:collectors": "node --test tests/collectors.test.mjs",
+    "collect:live": "node tools/collect-live.mjs",
     "operator": "node tools/operator.mjs",
-    "check": "for f in server.mjs assets/app.js src/*.mjs tools/*.mjs; do node --check \"$f\" || exit 1; done && node --test"
+    "check": "for f in server.js server.mjs assets/app.js src/*.mjs collectors/*.js db/*.js api/*.js models/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node --test",
+    "dev": "node server.js"
   },
   "devDependencies": {
     "linkedom": "^0.18.12"
-  }
+  },
+  "keywords": ["nfl", "nba", "injury", "alerts", "espn", "bluesky", "real-time"],
+  "license": "MIT"
 }

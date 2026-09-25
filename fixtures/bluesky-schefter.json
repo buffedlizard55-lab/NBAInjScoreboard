@@ -1,0 +1,58 @@
+{
+  "_note": "Bluesky author feed fixture - structure from real public.api.bsky.app response, content realistic",
+  "feed": [
+    {
+      "post": {
+        "uri": "at://did:plc:abc123/app.bsky.feed.post/3k2j4h5g6",
+        "cid": "bafyreiabc123",
+        "author": {
+          "did": "did:plc:abc123",
+          "handle": "schefter.bsky.social",
+          "displayName": "Adam Schefter",
+          "avatar": "https://cdn.bsky.app/img/avatar/abc123"
+        },
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Chiefs QB Patrick Mahomes suffered a knee injury in the second quarter vs Bills and is questionable to return, per source. Being evaluated in locker room.",
+          "createdAt": "2026-09-25T17:44:10Z",
+          "facets": []
+        },
+        "indexedAt": "2026-09-25T17:44:12Z"
+      }
+    },
+    {
+      "post": {
+        "uri": "at://did:plc:abc123/app.bsky.feed.post/3k2j4h5g5",
+        "cid": "bafyreiabc124",
+        "author": {
+          "did": "did:plc:abc123",
+          "handle": "schefter.bsky.social",
+          "displayName": "Adam Schefter"
+        },
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Bills RB James Cook exits game with hamstring tightness, questionable to return.",
+          "createdAt": "2026-09-25T17:30:00Z"
+        },
+        "indexedAt": "2026-09-25T17:30:05Z"
+      }
+    },
+    {
+      "post": {
+        "uri": "at://did:plc:abc123/app.bsky.feed.post/3k2j4h5g4",
+        "cid": "bafyreiabc125",
+        "author": {
+          "did": "did:plc:abc123",
+          "handle": "schefter.bsky.social",
+          "displayName": "Adam Schefter"
+        },
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Trade: The Cowboys are acquiring WR from Jets for 2027 5th round pick, per source.",
+          "createdAt": "2026-09-25T16:00:00Z"
+        },
+        "indexedAt": "2026-09-25T16:00:02Z"
+      }
+    }
+  ]
+}
